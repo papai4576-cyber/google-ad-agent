@@ -1,0 +1,30 @@
+{
+  "last_completed_phase": 6,
+  "current_phase": 7,
+  "current_phase_name": "Audit Batch 2 — Copy, Keywords, Negatives, Search Term Patterns",
+  "current_phase_status": "built, awaiting user to paste 4 files in agents/copy_intel/ and run testAuditBatch2",
+  "architecture": "Google Ads Script (collect) → Apps Script Web App (ingest) | Groq Llama 3.3 70B | Brain: Drive + ContentHunter RSS | 8 of 14 audit agents now live (Phase 6 batch 1 + Phase 7 batch 2)",
+  "phase_artifacts": [
+    "apps_script/config.js",
+    "apps_script/setup.js",
+    "apps_script/ingest.js",
+    "apps_script/llm.js",
+    "apps_script/brain/BrainStore.js",
+    "apps_script/brain/BrainCurator.js",
+    "apps_script/brain/ContentHunter.js",
+    "apps_script/brain/RedditHunter.js (inactive)",
+    "apps_script/agents/_common.js",
+    "apps_script/agents/audit/PerformanceAnalyst.js",
+    "apps_script/agents/audit/BidBudgetAnalyst.js",
+    "apps_script/agents/audit/QualityScoreInspector.js",
+    "apps_script/agents/audit/ConversionHealthChecker.js",
+    "apps_script/agents/copy_intel/AdCopyCritic.js",
+    "apps_script/agents/copy_intel/KeywordMiner.js",
+    "apps_script/agents/copy_intel/NegativeKwHunter.js",
+    "apps_script/agents/copy_intel/SearchTermPatternAnalyzer.js",
+    "google_ads_script.js",
+    "SETUP.md"
+  ],
+  "next_user_action": "Follow SETUP.md Phase 7: paste 4 files into agents/copy_intel/ → run testNegativeKwHunter → run testAuditBatch2",
+  "updated_at": "2026-06-03"
+}

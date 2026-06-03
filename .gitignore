@@ -1,0 +1,15 @@
+# Secrets — never commit these
+.env
+config/service_account.json
+apps_script/.clasp.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node (if using clasp locally)
+node_modules/
