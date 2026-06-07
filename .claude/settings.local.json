@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where py *)",
+      "Bash(py --version)",
+      "Bash(where python3 *)",
+      "Bash(py -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where.exe python *)",
+      "Bash(where.exe python.exe)",
+      "Read(//c/Users/papai/AppData/Local/Programs/**)",
+      "PowerShell($py = \"C:\\\\Users\\\\papai\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\"; & $py -m pip list --format=columns 2>&1 | Select-Object -First 40)",
+      "PowerShell(try { [System.IO.File]::OpenWrite\\(\"C:\\\\Users\\\\papai\\\\google-ads-agent\\\\SETUP.md\"\\).Close\\(\\); Write-Output \"writable\" } catch { Write-Output \"locked: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(try { [System.IO.File]::OpenWrite\\(\"C:\\\\Users\\\\papai\\\\google-ads-agent\\\\SETUP.md\"\\).Close\\(\\); Write-Output \"writable\" } catch { Write-Output \"still locked\" })",
+      "Bash(awk '$1>1 {print \"COLLISION:\", $0} $1==1 {next}')",
+      "Bash(git config *)",
+      "Bash(git commit -m 'Initial commit — Phases 1-6 green, Phase 7 built awaiting verification *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(gh --version)"
+    ]
+  }
+}

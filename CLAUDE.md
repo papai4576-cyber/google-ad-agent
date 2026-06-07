@@ -369,7 +369,7 @@ Every agent returns findings in this structure (stored as rows in the `Findings`
   "findings": [
     {
       "id": "unique_id",
-      "category": "performance|keywords|copy|structure|bidding|audience|extensions|competitive",
+      "category": "performance|keywords|copy|structure|bidding|audience|extensions|competitive|landing_page|general|scaling",
       "severity": "P1|P2|P3",
       "title": "Short action title",
       "what": "What is wrong or what opportunity exists",

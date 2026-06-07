@@ -100,12 +100,14 @@ function runCollect_() {
   const data = {};
   const results = [];
 
-  results.push(collect_(data, 'Raw_Campaigns',   () => fetchCampaigns_(runDate, dateRange)));
-  results.push(collect_(data, 'Raw_AdGroups',    () => fetchAdGroups_(runDate, dateRange)));
-  results.push(collect_(data, 'Raw_Keywords',    () => fetchKeywords_(runDate, dateRange)));
-  results.push(collect_(data, 'Raw_Ads',         () => fetchAds_(runDate, dateRange)));
-  results.push(collect_(data, 'Raw_SearchTerms', () => fetchSearchTerms_(runDate, dateRange)));
-  results.push(collect_(data, 'Raw_Extensions',  () => fetchExtensions_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_Campaigns',        () => fetchCampaigns_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_Campaigns_Daily',  () => fetchCampaignsDaily_(runDate)));
+  results.push(collect_(data, 'Raw_AdGroups',         () => fetchAdGroups_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_Keywords',         () => fetchKeywords_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_Ads',              () => fetchAds_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_SearchTerms',      () => fetchSearchTerms_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_Extensions',       () => fetchExtensions_(runDate, dateRange)));
+  results.push(collect_(data, 'Raw_NegativeKeywords', () => fetchNegativeKeywords_(runDate)));
 
   log_('');
   log_('═════════════════════════════════════════════');
@@ -160,7 +162,7 @@ function fetchCampaigns_(runDate, dateRange) {
       metrics.search_rank_lost_impression_share
     FROM campaign
     WHERE segments.date DURING ${dateRange}
-      AND campaign.status != 'REMOVED'
+      AND campaign.status = 'ENABLED'
     ORDER BY metrics.cost_micros DESC
   `;
   const rows = [];
@@ -192,6 +194,40 @@ function fetchCampaigns_(runDate, dateRange) {
   return rows;
 }
 
+function fetchCampaignsDaily_(runDate) {
+  // Per-campaign-per-DAY metrics for the trailing 30 days, regardless of
+  // COLLECT_MODE. The dashboard derives 7d / 30d / this-month windows and
+  // period-over-period trends by summing the relevant day rows — so one
+  // segmented query replaces three window-specific queries.
+  const query = `
+    SELECT
+      campaign.id, campaign.name, segments.date,
+      metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions, metrics.conversions_value
+    FROM campaign
+    WHERE segments.date DURING LAST_30_DAYS
+      AND campaign.status = 'ENABLED'
+    ORDER BY segments.date DESC
+  `;
+  const rows = [];
+  const iter = AdsApp.report(query).rows();
+  while (iter.hasNext()) {
+    const r = iter.next();
+    rows.push({
+      run_date:         runDate,
+      date:             rs_(r, 'segments.date'),
+      campaign_id:      rs_(r, 'campaign.id'),
+      campaign_name:    rs_(r, 'campaign.name'),
+      impressions:      rn_(r, 'metrics.impressions'),
+      clicks:           rn_(r, 'metrics.clicks'),
+      cost_micros:      rn_(r, 'metrics.cost_micros'),
+      conversions:      rn_(r, 'metrics.conversions'),
+      conversion_value: rn_(r, 'metrics.conversions_value'),
+    });
+  }
+  return rows;
+}
+
 function fetchAdGroups_(runDate, dateRange) {
   // GAQL note: ad_group has no `campaign_id` column — instead, query
   // `campaign.id` directly. GAQL auto-joins the parent campaign for you.
@@ -204,7 +240,8 @@ function fetchAdGroups_(runDate, dateRange) {
       metrics.conversions, metrics.conversions_value
     FROM ad_group
     WHERE segments.date DURING ${dateRange}
-      AND ad_group.status != 'REMOVED'
+      AND ad_group.status = 'ENABLED'
+      AND campaign.status = 'ENABLED'
     ORDER BY metrics.cost_micros DESC
   `;
   const rows = [];
@@ -247,7 +284,10 @@ function fetchKeywords_(runDate, dateRange) {
       metrics.ctr, metrics.average_cpc
     FROM keyword_view
     WHERE segments.date DURING ${dateRange}
-      AND ad_group_criterion.status != 'REMOVED'
+      AND ad_group_criterion.status = 'ENABLED'
+      AND ad_group.status = 'ENABLED'
+      AND campaign.status = 'ENABLED'
+      AND metrics.impressions > 0
     ORDER BY metrics.cost_micros DESC
     LIMIT ${CONFIG.LIMITS.keywords}
   `;
@@ -285,7 +325,9 @@ function fetchKeywords_(runDate, dateRange) {
 function fetchAds_(runDate, dateRange) {
   // RSAs have nested headlines/descriptions; use selector iteration.
   const adsIter = AdsApp.ads()
-    .withCondition("Status != 'REMOVED'")
+    .withCondition("Status = 'ENABLED'")
+    .withCondition("AdGroupStatus = 'ENABLED'")
+    .withCondition("CampaignStatus = 'ENABLED'")
     .withCondition("Type = 'RESPONSIVE_SEARCH_AD'")
     .orderBy('metrics.impressions DESC')
     .forDateRange(dateRange)
@@ -337,6 +379,8 @@ function fetchSearchTerms_(runDate, dateRange) {
     FROM search_term_view
     WHERE segments.date DURING ${dateRange}
       AND metrics.impressions > 0
+      AND campaign.status = 'ENABLED'
+      AND ad_group.status = 'ENABLED'
     ORDER BY metrics.cost_micros DESC
     LIMIT ${CONFIG.LIMITS.search_terms}
   `;
@@ -366,7 +410,8 @@ function fetchSearchTerms_(runDate, dateRange) {
 function fetchExtensions_(runDate, dateRange) {
   const query = `
     SELECT
-      campaign.id, asset.id, asset.type, asset.name,
+      campaign.id, campaign.status,
+      asset.id, asset.type, asset.name,
       asset.sitelink_asset.link_text,
       asset.callout_asset.callout_text,
       asset.structured_snippet_asset.header,
@@ -375,6 +420,7 @@ function fetchExtensions_(runDate, dateRange) {
     FROM campaign_asset
     WHERE segments.date DURING ${dateRange}
       AND campaign_asset.status = 'ENABLED'
+      AND campaign.status = 'ENABLED'
       AND asset.type IN ('SITELINK','CALLOUT','STRUCTURED_SNIPPET','PROMOTION','CALL','PRICE')
     LIMIT ${CONFIG.LIMITS.extensions}
   `;
@@ -401,6 +447,118 @@ function fetchExtensions_(runDate, dateRange) {
       ctr:           rn_(r, 'metrics.ctr'),
     });
   }
+  return rows;
+}
+
+/* ===========================================================================
+ * Negative keywords — three sources rolled into one tab:
+ *   1. ad_group_criterion where .negative = TRUE
+ *   2. campaign_criterion where .negative = TRUE AND .type = KEYWORD
+ *   3. shared_criterion (shared negative lists) attached to active campaigns
+ *
+ * No metrics — negatives have no performance data. We just need their text
+ * so NegativeKwHunter can stop recommending things you already block.
+ * ========================================================================= */
+function fetchNegativeKeywords_(runDate) {
+  const rows = [];
+
+  // 1. Ad-group-level negatives.
+  try {
+    const q1 = `
+      SELECT
+        ad_group.id, ad_group.name,
+        campaign.id, campaign.name,
+        ad_group_criterion.keyword.text,
+        ad_group_criterion.keyword.match_type
+      FROM ad_group_criterion
+      WHERE ad_group_criterion.negative = TRUE
+        AND ad_group_criterion.type = 'KEYWORD'
+        AND ad_group.status = 'ENABLED'
+        AND campaign.status = 'ENABLED'
+      LIMIT 10000
+    `;
+    const it = AdsApp.report(q1).rows();
+    while (it.hasNext()) {
+      const r = it.next();
+      rows.push({
+        run_date:         runDate,
+        scope:            'ad_group',
+        campaign_id:      rs_(r, 'campaign.id'),
+        campaign_name:    rs_(r, 'campaign.name'),
+        ad_group_id:      rs_(r, 'ad_group.id'),
+        ad_group_name:    rs_(r, 'ad_group.name'),
+        shared_set_id:    '',
+        shared_set_name:  '',
+        text:             rs_(r, 'ad_group_criterion.keyword.text'),
+        match_type:       rs_(r, 'ad_group_criterion.keyword.match_type'),
+      });
+    }
+  } catch (e) {
+    log_(`fetchNegativeKeywords: ad-group query failed: ${e.message || e}`);
+  }
+
+  // 2. Campaign-level negatives.
+  try {
+    const q2 = `
+      SELECT
+        campaign.id, campaign.name,
+        campaign_criterion.keyword.text,
+        campaign_criterion.keyword.match_type
+      FROM campaign_criterion
+      WHERE campaign_criterion.negative = TRUE
+        AND campaign_criterion.type = 'KEYWORD'
+        AND campaign.status = 'ENABLED'
+      LIMIT 10000
+    `;
+    const it = AdsApp.report(q2).rows();
+    while (it.hasNext()) {
+      const r = it.next();
+      rows.push({
+        run_date:         runDate,
+        scope:            'campaign',
+        campaign_id:      rs_(r, 'campaign.id'),
+        campaign_name:    rs_(r, 'campaign.name'),
+        ad_group_id:      '',
+        ad_group_name:    '',
+        shared_set_id:    '',
+        shared_set_name:  '',
+        text:             rs_(r, 'campaign_criterion.keyword.text'),
+        match_type:       rs_(r, 'campaign_criterion.keyword.match_type'),
+      });
+    }
+  } catch (e) {
+    log_(`fetchNegativeKeywords: campaign query failed: ${e.message || e}`);
+  }
+
+  // 3. Shared negative lists. Use the selector API — much easier than GAQL
+  //    for shared_set + shared_criterion joins.
+  try {
+    const setIter = AdsApp.negativeKeywordLists().get();
+    while (setIter.hasNext()) {
+      const set = setIter.next();
+      const setId = String(set.getId());
+      const setName = set.getName();
+      const kwIter = set.negativeKeywords().get();
+      while (kwIter.hasNext()) {
+        const kw = kwIter.next();
+        rows.push({
+          run_date:         runDate,
+          scope:            'shared',
+          campaign_id:      '',
+          campaign_name:    '',
+          ad_group_id:      '',
+          ad_group_name:    '',
+          shared_set_id:    setId,
+          shared_set_name:  setName,
+          text:             kw.getText(),
+          match_type:       String(kw.getMatchType() || ''),
+        });
+      }
+    }
+  } catch (e) {
+    log_(`fetchNegativeKeywords: shared lists failed: ${e.message || e}`);
+  }
+
   return rows;
 }
 

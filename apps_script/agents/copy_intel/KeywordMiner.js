@@ -73,23 +73,23 @@ function _keywordMinerFormatData(d) {
   // Pre-filter: converting terms not already exact, with meaningful signal.
   const candidates = d.searchTerms.filter(t => {
     if (t.conversions <= 0) return false;
-    if (t.conversions === 1 && t.cost_micros < 50_000_000) return false;
+    if (t.conversions === 1 && t.cost_micros < 50000000) return false;
     const key = String(t.term || '').toLowerCase().trim();
     return !exactSet.has(key);
   });
 
   const top = candidates
     .sort((a, b) => b.conversions - a.conversions || b.cost_micros - a.cost_micros)
-    .slice(0, 100);
+    .slice(0, 35);
 
   lines.push(`Promotable search terms (converting, not yet exact-match): ${candidates.length} total`);
   lines.push(`Showing top ${top.length} by conversions:`);
-  lines.push('term | impressions | clicks | spend | conversions | conv_value | ad_group_id | ad_group | campaign');
+  lines.push('term | clicks | spend | conversions | ad_group_id | ad_group');
   for (const t of top) {
     lines.push(
-      `"${t.term}" | ${t.impressions} | ${t.clicks} | ` +
+      `"${t.term}" | ${t.clicks} | ` +
       `${cur}${AgentCommon.micros(t.cost_micros).toFixed(2)} | ${t.conversions} | ` +
-      `${cur}${0} | ${t.ad_group_id} | ${t.ad_group_name} | ${t.campaign_name}`
+      `${t.ad_group_id} | ${t.ad_group_name}`
     );
   }
   if (top.length === 0) {

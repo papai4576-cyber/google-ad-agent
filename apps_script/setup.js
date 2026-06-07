@@ -30,6 +30,8 @@ function setupEverything() {
   results.push(safe_(() => seedConfigTab_(),           'Seed Config tab'));
   results.push(safe_(() => createBrainFolder_(),       'Create Brain Drive folder'));
   results.push(safe_(() => verifyGroq_(),              'Verify Groq API key'));
+  results.push(safe_(() => verifyGemini_(),            'Verify Gemini API key'));
+  results.push(safe_(() => installDashboardTrigger(),  'Install dashboard onEdit trigger'));
 
   log_('setup', '');
   log_('setup', 'Results:');
@@ -147,6 +149,10 @@ function seedConfigTab_() {
     CONTENT_LOOKBACK_DAYS:  ['7',     'ContentHunter: index RSS items published within this many days.'],
     CONTENT_FEEDS_JSON:     ['',      'ContentHunter: optional JSON array [{"name":"...","url":"..."}] to override default PPC blog feeds.'],
     NEGATIVE_KW_MIN_WASTE:  ['50',    'NegativeKwHunter: minimum spend (in account currency) for a zero-conversion term to be considered for negation.'],
+    DASHBOARD_WINDOW:       ['30d',   'Default dashboard window when the B1 dropdown is unset: 7d | 30d | mtd.'],
+    MIN_IMPRESSIONS:        ['0',     'Materiality: read-time floor on impressions for an entity to be analysed (collection already drops 0-impression keywords/terms).'],
+    MIN_CONV_FOR_CPA:       ['5',     'Significance: minimum conversions before a CPA/ROAS-based conclusion is trustworthy.'],
+    MIN_CLICKS_FOR_CVR:     ['30',    'Significance: minimum clicks before a conversion-rate conclusion is trustworthy.'],
   };
 
   // Read existing config keys so we don't overwrite the user's edits.
@@ -241,6 +247,38 @@ function verifyGroq_() {
   return `reached Groq ${LLM.model} (replied "${text || '<empty>'}")`;
 }
 
+function verifyGemini_() {
+  const reg = LLM_PROVIDERS.gemini;
+  const key = PROPS.get(reg.apiKeyProp);
+  if (!key) {
+    return 'skipped — GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey ' +
+           'and add it in Project Settings → Script Properties. Until then, Gemini-assigned ' +
+           'agents fail over to Groq automatically.';
+  }
+
+  const url = reg.endpoint.replace('{model}', reg.model) + '?key=' + encodeURIComponent(key);
+  const payload = {
+    contents: [{ role: 'user', parts: [{ text: 'Reply with exactly the word: pong' }] }],
+    generationConfig: { temperature: 0, maxOutputTokens: 8 },
+  };
+
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  const code = resp.getResponseCode();
+  if (code !== 200) {
+    throw new Error(`Gemini returned HTTP ${code}: ${resp.getContentText().slice(0, 300)}`);
+  }
+  const body = JSON.parse(resp.getContentText());
+  let text = '';
+  try { text = body.candidates[0].content.parts[0].text.trim(); } catch (_e) { text = ''; }
+  return `reached Gemini ${reg.model} (replied "${text || '<empty>'}")`;
+}
+
 /* ───────────────────────── helpers ──────────────────────────────────────── */
 
 function safe_(fn, label) {
@@ -266,6 +304,7 @@ function showSetupStatus() {
   log_('status', `SPREADSHEET_ID         = ${props.SPREADSHEET_ID || '(not set)'}`);
   log_('status', `BRAIN_DRIVE_FOLDER_ID  = ${props.BRAIN_DRIVE_FOLDER_ID || '(not set)'}`);
   log_('status', `GROQ_API_KEY           = ${props.GROQ_API_KEY ? '(set, ' + props.GROQ_API_KEY.length + ' chars)' : '(not set)'}`);
+  log_('status', `GEMINI_API_KEY         = ${props.GEMINI_API_KEY ? '(set, ' + props.GEMINI_API_KEY.length + ' chars)' : '(not set — Gemini agents fail over to Groq)'}`);
   log_('status', `SLACK_BOT_TOKEN        = ${props.SLACK_BOT_TOKEN ? '(set)' : '(not set, fine for phases 1–10)'}`);
   log_('status', `SLACK_WEBHOOK_URL      = ${props.SLACK_WEBHOOK_URL ? '(set)' : '(not set, fine for phases 1–10)'}`);
   log_('status', `SLACK_CHANNEL_ID       = ${props.SLACK_CHANNEL_ID ? '(set)' : '(not set, fine for phases 1–10)'}`);

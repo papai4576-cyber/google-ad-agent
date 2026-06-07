@@ -29,6 +29,12 @@ function doPost(e) {
 
     const written = writeAllTabs_(payload);
 
+    // Record what data we just received so agents downstream can tell the
+    // human "this is N-day data, last collected on YYYY-MM-DD".
+    if (payload.date_range) PROPS.set('LAST_COLLECT_DATE_RANGE', payload.date_range);
+    if (payload.run_date)   PROPS.set('LAST_COLLECT_DATE', payload.run_date);
+    if (payload.mode)       PROPS.set('LAST_COLLECT_MODE', payload.mode);
+
     log_('ingest', `OK — ${JSON.stringify(written)}`);
     return jsonResponse_({ ok: true, written: written, run_date: payload.run_date });
 

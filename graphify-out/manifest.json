@@ -1,0 +1,202 @@
+{
+  "C:\\Users\\papai\\google-ads-agent\\.clasp.json": {
+    "mtime": 1780507692.9302063,
+    "ast_hash": "d57d40a2f1b81670b7f2a6d6ed1111b6",
+    "semantic_hash": "d57d40a2f1b81670b7f2a6d6ed1111b6"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\.claude\\settings.json": {
+    "mtime": 1780762608.0394487,
+    "ast_hash": "baff66366aec588a40225be2d43ca0ba",
+    "semantic_hash": "baff66366aec588a40225be2d43ca0ba"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\.claude\\settings.local.json": {
+    "mtime": 1780471185.6928391,
+    "ast_hash": "964518dae977c05d692008cfb5fa8dd9",
+    "semantic_hash": "964518dae977c05d692008cfb5fa8dd9"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\Dashboard.js": {
+    "mtime": 1780772953.5954664,
+    "ast_hash": "481ff9f069d5bca61a855b35e4d6cbba",
+    "semantic_hash": "481ff9f069d5bca61a855b35e4d6cbba"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\_common.js": {
+    "mtime": 1780771934.26388,
+    "ast_hash": "1dc5be0be3d2894dda3eb2f2b291716f",
+    "semantic_hash": "1dc5be0be3d2894dda3eb2f2b291716f"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\AccountStructureReviewer.js": {
+    "mtime": 1780770311.3461192,
+    "ast_hash": "3962a0e20cd54a6b6586523a794a2392",
+    "semantic_hash": "3962a0e20cd54a6b6586523a794a2392"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\AudienceAnalyst.js": {
+    "mtime": 1780508886.643725,
+    "ast_hash": "6a7142fcc52f99d9318ac8d0cd3d4f7f",
+    "semantic_hash": "6a7142fcc52f99d9318ac8d0cd3d4f7f"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\BidBudgetAnalyst.js": {
+    "mtime": 1780769876.2116601,
+    "ast_hash": "82ede73372187aa7ef5935508464d20e",
+    "semantic_hash": "82ede73372187aa7ef5935508464d20e"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\ConversionHealthChecker.js": {
+    "mtime": 1780770175.6264057,
+    "ast_hash": "179dd945540fc40c56984b7ec0bc57bc",
+    "semantic_hash": "179dd945540fc40c56984b7ec0bc57bc"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\ExtensionAuditor.js": {
+    "mtime": 1780770280.3553538,
+    "ast_hash": "c88ba86f9d2d9d6416762152f86d4820",
+    "semantic_hash": "c88ba86f9d2d9d6416762152f86d4820"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\PerformanceAnalyst.js": {
+    "mtime": 1780431510.9763448,
+    "ast_hash": "81cb0f327b15544a04112911bf41b2f8",
+    "semantic_hash": "81cb0f327b15544a04112911bf41b2f8"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\audit\\QualityScoreInspector.js": {
+    "mtime": 1780770137.4469368,
+    "ast_hash": "83c6de16ae8bac987c79d8f6a6e80bd1",
+    "semantic_hash": "83c6de16ae8bac987c79d8f6a6e80bd1"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\AdCopyCritic.js": {
+    "mtime": 1780432435.307199,
+    "ast_hash": "c7abcec93b92d83db083aae9ef3b23af",
+    "semantic_hash": "c7abcec93b92d83db083aae9ef3b23af"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\CategoryTrendSpotter.js": {
+    "mtime": 1780509794.310939,
+    "ast_hash": "fb877f04803cdfe234bc209272888823",
+    "semantic_hash": "fb877f04803cdfe234bc209272888823"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\CompetitiveIntel.js": {
+    "mtime": 1780508951.8258617,
+    "ast_hash": "9def998cada9f733219cf0ec2a4b21b2",
+    "semantic_hash": "9def998cada9f733219cf0ec2a4b21b2"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\KeywordMiner.js": {
+    "mtime": 1780771140.2357068,
+    "ast_hash": "6cac3061867cd4079798546dffb9d037",
+    "semantic_hash": "6cac3061867cd4079798546dffb9d037"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\LandingPageScorer.js": {
+    "mtime": 1780509039.5263665,
+    "ast_hash": "ec0241e7a70c7cdf5d5c3b5a90d3a05c",
+    "semantic_hash": "ec0241e7a70c7cdf5d5c3b5a90d3a05c"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\NegativeKwHunter.js": {
+    "mtime": 1780771189.7249348,
+    "ast_hash": "7f539619ba1fe5bc2e2c5f6ccb43ca18",
+    "semantic_hash": "7f539619ba1fe5bc2e2c5f6ccb43ca18"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\copy_intel\\SearchTermPatternAnalyzer.js": {
+    "mtime": 1780771159.9210188,
+    "ast_hash": "6f698925097b1f7e30b9c1435d3370a2",
+    "semantic_hash": "6f698925097b1f7e30b9c1435d3370a2"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\synthesis\\DeduplicationAgent.js": {
+    "mtime": 1780762968.2490492,
+    "ast_hash": "b8781aad417dc1de4943f4437c2331d4",
+    "semantic_hash": "b8781aad417dc1de4943f4437c2331d4"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\synthesis\\ImpactScorer.js": {
+    "mtime": 1780511529.0604925,
+    "ast_hash": "bcf644603785542fb36e8934f7d99ebf",
+    "semantic_hash": "bcf644603785542fb36e8934f7d99ebf"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\agents\\synthesis\\PlanFormatter.js": {
+    "mtime": 1780511554.111392,
+    "ast_hash": "202124877f6a28538c20b51a579af433",
+    "semantic_hash": "202124877f6a28538c20b51a579af433"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\appsscript.json": {
+    "mtime": 1780507707.2479894,
+    "ast_hash": "ff010b1269d307c0f227327510e42b1b",
+    "semantic_hash": "ff010b1269d307c0f227327510e42b1b"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\brain\\BrainCurator.js": {
+    "mtime": 1780425866.5153892,
+    "ast_hash": "1e98c108e90bf67c77971eef6506d14a",
+    "semantic_hash": "1e98c108e90bf67c77971eef6506d14a"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\brain\\BrainStore.js": {
+    "mtime": 1780430663.0870693,
+    "ast_hash": "1b0b6cff780ec1ce5b32885dc22f3f71",
+    "semantic_hash": "1b0b6cff780ec1ce5b32885dc22f3f71"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\brain\\ContentHunter.js": {
+    "mtime": 1780428649.3250847,
+    "ast_hash": "1e9349ee292d7df878c67022421bdb37",
+    "semantic_hash": "1e9349ee292d7df878c67022421bdb37"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\config.js": {
+    "mtime": 1780771812.6823945,
+    "ast_hash": "8e065243dfc0096aa3219e779e297ad3",
+    "semantic_hash": "8e065243dfc0096aa3219e779e297ad3"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\ingest.js": {
+    "mtime": 1780512137.1887484,
+    "ast_hash": "2e5d7735898a48bf0c3ab8bc4775dd17",
+    "semantic_hash": "2e5d7735898a48bf0c3ab8bc4775dd17"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\llm.js": {
+    "mtime": 1780769065.4750695,
+    "ast_hash": "266b7b30a80c0dbe48ea0f8646d665f4",
+    "semantic_hash": "266b7b30a80c0dbe48ea0f8646d665f4"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\managers\\AuditManager.js": {
+    "mtime": 1780511155.2124972,
+    "ast_hash": "8cbcf8e6419ac13ce80bf164c39163b4",
+    "semantic_hash": "8cbcf8e6419ac13ce80bf164c39163b4"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\managers\\CampaignDirector.js": {
+    "mtime": 1780771241.0358298,
+    "ast_hash": "13533cf5b52ec42920c57a4908787ed4",
+    "semantic_hash": "13533cf5b52ec42920c57a4908787ed4"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\managers\\CopyIntelManager.js": {
+    "mtime": 1780511175.428401,
+    "ast_hash": "6f2e45084b8965f08c9c6da6db97e983",
+    "semantic_hash": "6f2e45084b8965f08c9c6da6db97e983"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\managers\\SynthesisManager.js": {
+    "mtime": 1780511582.0226018,
+    "ast_hash": "9e793812f5976ff8e71f66f350797382",
+    "semantic_hash": "9e793812f5976ff8e71f66f350797382"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\rules\\RulesEngine.js": {
+    "mtime": 1780769837.2965775,
+    "ast_hash": "ca90502ec458c04118ff7f0b0ab996ed",
+    "semantic_hash": "ca90502ec458c04118ff7f0b0ab996ed"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\apps_script\\setup.js": {
+    "mtime": 1780772098.619231,
+    "ast_hash": "187dff4e7968ffa5ba9c8848d6f5f633",
+    "semantic_hash": "187dff4e7968ffa5ba9c8848d6f5f633"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\google_ads_script.js": {
+    "mtime": 1780771904.9915886,
+    "ast_hash": "72e46f123fcb106e70bd79afd2f8ba5a",
+    "semantic_hash": "72e46f123fcb106e70bd79afd2f8ba5a"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\state\\progress.json": {
+    "mtime": 1780769548.897601,
+    "ast_hash": "7530fd8adf63ab3c96c291f52560406a",
+    "semantic_hash": "7530fd8adf63ab3c96c291f52560406a"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\CLAUDE.md": {
+    "mtime": 1780509266.0583725,
+    "ast_hash": "070ebd60346d09e408b4298d5024da9f",
+    "semantic_hash": "070ebd60346d09e408b4298d5024da9f"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\RESUME.md": {
+    "mtime": 1780470906.0587232,
+    "ast_hash": "26828c16b130aacfd2137d47cbbc2ed0",
+    "semantic_hash": "26828c16b130aacfd2137d47cbbc2ed0"
+  },
+  "C:\\Users\\papai\\google-ads-agent\\SETUP.md": {
+    "mtime": 1780432563.580648,
+    "ast_hash": "82162f1d46a1c0a17a3171d409188853",
+    "semantic_hash": "82162f1d46a1c0a17a3171d409188853"
+  }
+}

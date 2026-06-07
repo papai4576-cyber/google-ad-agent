@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(clasp --version; Write-Output \"---login---\"; clasp login --status 2>$null; Write-Output \"---creds---\"; if \\(Test-Path \"$env:USERPROFILE\\\\.clasprc.json\"\\) { Write-Output \"global creds present\" } else { Write-Output \"no global creds\" })",
+      "PowerShell(clasp push --force 2>&1)",
+      "PowerShell(clasp run runSynthesisManager --params '[{\"run_date\":\"2026-06-03\"}]' 2>&1)",
+      "PowerShell(clasp run testSynthesisOnDate 2>&1)"
+    ]
+  }
+}

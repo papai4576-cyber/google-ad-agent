@@ -76,6 +76,92 @@ const LLM = {
 };
 
 /* ============================================================================
+ * Multi-provider LLM registry. Groq is OpenAI-compatible; Gemini uses Google's
+ * generativelanguage REST API. llm.js dispatches on `provider` and normalises
+ * both responses to one shape, so agents never see the difference.
+ *
+ * Why two providers: Groq (Llama 3.3 70B) is the stronger reasoner but is
+ * capped at 100K tokens/DAY on the free tier. Gemini 2.0 Flash has a SEPARATE
+ * free quota (1,500 req/day, 1M tokens/min) and is fast. We route the routine,
+ * rule-heavy agents to Gemini to preserve Groq's daily budget for the agents
+ * that actually need deep reasoning — and fail over between them automatically.
+ * ========================================================================== */
+const LLM_PROVIDERS = {
+  groq: {
+    provider:   'groq',
+    endpoint:   'https://api.groq.com/openai/v1/chat/completions',
+    model:      'llama-3.3-70b-versatile',
+    apiKeyProp: 'GROQ_API_KEY',
+  },
+  gemini: {
+    // {model} is substituted at call time; key is passed as ?key= query param.
+    // gemini-2.0-flash was retired for generateContent (404). gemini-2.5-flash
+    // is the current fast/free-tier model. To change models, edit only this line.
+    provider:   'gemini',
+    endpoint:   'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+    model:      'gemini-2.5-flash',
+    apiKeyProp: 'GEMINI_API_KEY',
+  },
+};
+
+// Fallback default when an agent has no explicit assignment and Config sets none.
+const LLM_DEFAULT_PROVIDER = 'groq';
+
+/* ============================================================================
+ * Agent → provider assignment ("who is good at what").
+ *
+ *   Groq   = judgment / nuanced reasoning agents
+ *   Gemini = rule/data-heavy agents that mostly apply thresholds to tables
+ *            (offloads them from Groq's scarce daily token budget)
+ *
+ * Tunable at runtime: a Config-sheet key `LLM_FORCE_PROVIDER` (groq|gemini)
+ * overrides EVERY agent (handy for testing or when one provider is down).
+ * A per-agent override can also be set via Config key `LLM__<agent_name>`.
+ * ========================================================================== */
+const AGENT_LLM = {
+  // ── Groq: reasoning-heavy ──────────────────────────────────────────────
+  performance_analyst:          'groq',
+  ad_copy_critic:               'groq',
+  search_term_pattern_analyzer: 'groq',
+  category_trend_spotter:       'groq',
+  audience_analyst:             'groq',
+  keyword_miner:                'groq',
+  negative_kw_hunter:           'groq',
+  competitive_intel:            'groq',
+  // ── Gemini Flash: rule/data-heavy ──────────────────────────────────────
+  bid_budget_analyst:           'gemini',
+  quality_score_inspector:      'gemini',
+  conversion_health_checker:    'gemini',
+  account_structure_reviewer:   'gemini',
+  extension_auditor:            'gemini',
+  landing_page_scorer:          'gemini',
+};
+
+/**
+ * Resolve which provider an agent should use. Precedence:
+ *   1. Config `LLM_FORCE_PROVIDER` (forces all agents — testing/outage switch)
+ *   2. Config per-agent override `LLM__<agent_name>`
+ *   3. AGENT_LLM static assignment
+ *   4. LLM_DEFAULT_PROVIDER
+ * Always returns a valid key present in LLM_PROVIDERS.
+ */
+function pickProvider(agentName) {
+  let p = null;
+
+  const forced = getConfig('LLM_FORCE_PROVIDER', '');
+  if (forced) p = String(forced).toLowerCase().trim();
+
+  if (!p && agentName) {
+    const override = getConfig('LLM__' + agentName, '');
+    if (override) p = String(override).toLowerCase().trim();
+  }
+  if (!p && agentName) p = AGENT_LLM[agentName] || null;
+  if (!p) p = LLM_DEFAULT_PROVIDER;
+
+  return LLM_PROVIDERS[p] ? p : LLM_DEFAULT_PROVIDER;
+}
+
+/* ============================================================================
  * Account targets and safety rails — these are SOURCED FROM the Config sheet
  * tab at runtime (not from Script Properties) so you can edit them without
  * re-deploying. Defaults here are the seeds the Config tab is initialised to.
@@ -110,8 +196,12 @@ const VALID = {
   magnitudes:   ['low', 'medium', 'high'],
   confidences:  ['low', 'medium', 'high'],
   efforts:      ['easy', 'medium', 'hard'],
+  // Finding categories. The first 8 are the canonical ones from CLAUDE.md;
+  // landing_page / general / scaling were added in Phase 8 so the LP scorer
+  // and trend / scaling findings can pass validation cleanly.
   categories:   ['performance', 'keywords', 'copy', 'structure',
-                 'bidding', 'audience', 'extensions', 'competitive'],
+                 'bidding', 'audience', 'extensions', 'competitive',
+                 'landing_page', 'general', 'scaling'],
   target_types: ['campaign', 'adgroup', 'keyword', 'ad'],
   modes:        ['daily', 'weekly'],
   brain_categories: ['copy', 'bidding', 'structure', 'scaling', 'brand',
@@ -143,6 +233,14 @@ const SHEETS = {
       'budget_micros', 'impressions', 'clicks', 'cost_micros',
       'conversions', 'conversion_value', 'ctr', 'avg_cpc_micros',
       'search_is', 'search_budget_lost_is', 'search_rank_lost_is',
+    ],
+  },
+  Raw_Campaigns_Daily: {
+    description: 'Per-campaign-per-DAY metrics (segments.date, last 30d) — powers ' +
+                 'the dashboard 7d/30d/MTD windows and trend deltas',
+    headers: [
+      'run_date', 'date', 'campaign_id', 'campaign_name',
+      'impressions', 'clicks', 'cost_micros', 'conversions', 'conversion_value',
     ],
   },
   Raw_AdGroups: {
@@ -187,6 +285,14 @@ const SHEETS = {
     headers: [
       'run_date', 'extension_id', 'type', 'campaign_id', 'ad_group_id',
       'text', 'status', 'impressions', 'clicks', 'ctr',
+    ],
+  },
+  Raw_NegativeKeywords: {
+    description: 'Existing negative keywords (campaign-level, ad-group-level, shared lists)',
+    headers: [
+      'run_date', 'scope', 'campaign_id', 'campaign_name',
+      'ad_group_id', 'ad_group_name', 'shared_set_id', 'shared_set_name',
+      'text', 'match_type',
     ],
   },
   Raw_SearchConsole: {
@@ -288,4 +394,17 @@ function todayString_() {
 
 function nowIso_() {
   return new Date().toISOString();
+}
+
+/* ============================================================================
+ * Run-scoped date. CampaignDirector sets RUN_CONTEXT.run_date once at the start
+ * of a full run so EVERY agent + synthesis stamp the SAME run_date — even if the
+ * run crosses local midnight (which previously split findings across two dates
+ * and left synthesis processing only half of them). When null, each writer
+ * falls back to today's date.
+ * ========================================================================== */
+const RUN_CONTEXT = { run_date: null };
+
+function runDateForWrite_() {
+  return RUN_CONTEXT.run_date || todayString_();
 }

@@ -58,37 +58,36 @@ function _searchTermPatternFormatData(d) {
   const lines = [];
   const cur = AgentCommon.getCurrency();
 
-  // Top 150 by impressions — visibility into where attention flows.
+  // Trimmed caps — enough breadth to spot themes while staying well under
+  // Groq's per-minute token ceiling (which was forcing 30s rate-limit sleeps).
+  const TOP_BY_IMPRESSIONS = 40;
+  const TOP_CONVERTERS = 20;
+
   const topByImpressions = d.searchTerms
     .slice()
     .sort((a, b) => b.impressions - a.impressions)
-    .slice(0, 150);
+    .slice(0, TOP_BY_IMPRESSIONS);
 
-  // Top 50 by conversions — what's actually working.
   const topConverters = d.searchTerms
     .filter(t => t.conversions > 0)
     .sort((a, b) => b.conversions - a.conversions)
-    .slice(0, 50);
+    .slice(0, TOP_CONVERTERS);
 
-  lines.push(`Top 150 search terms by IMPRESSIONS:`);
-  lines.push('term | impressions | clicks | spend | conv | ad_group | campaign');
+  lines.push(`Top ${topByImpressions.length} search terms by IMPRESSIONS:`);
+  lines.push('term | impressions | clicks | conv | ad_group');
   for (const t of topByImpressions) {
     lines.push(
-      `"${t.term}" | ${t.impressions} | ${t.clicks} | ` +
-      `${cur}${AgentCommon.micros(t.cost_micros).toFixed(2)} | ${t.conversions} | ` +
-      `${t.ad_group_name} | ${t.campaign_name}`
+      `"${t.term}" | ${t.impressions} | ${t.clicks} | ${t.conversions} | ${t.ad_group_name}`
     );
   }
 
   if (topConverters.length > 0) {
     lines.push('');
     lines.push(`Top ${topConverters.length} search terms by CONVERSIONS:`);
-    lines.push('term | impressions | clicks | spend | conv | ad_group | campaign');
+    lines.push('term | impressions | clicks | conv | ad_group');
     for (const t of topConverters) {
       lines.push(
-        `"${t.term}" | ${t.impressions} | ${t.clicks} | ` +
-        `${cur}${AgentCommon.micros(t.cost_micros).toFixed(2)} | ${t.conversions} | ` +
-        `${t.ad_group_name} | ${t.campaign_name}`
+        `"${t.term}" | ${t.impressions} | ${t.clicks} | ${t.conversions} | ${t.ad_group_name}`
       );
     }
   }

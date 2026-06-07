@@ -13,3 +13,6 @@ Thumbs.db
 
 # Node (if using clasp locally)
 node_modules/
+
+# clasp config (root-level)
+.clasp.json

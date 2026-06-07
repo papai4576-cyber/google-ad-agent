@@ -1,17 +1,19 @@
 /**
- * BidBudgetAnalyst.js — surfaces bid-strategy and budget issues.
+ * BidBudgetAnalyst.js — bid-strategy and budget issues.  [RULE-BASED]
  *
- * Domain: HOW the campaign is bidding/spending, not WHAT it's producing.
- * Flags:
- *   - Smart bidding (tROAS/tCPA) on campaigns with too little conversion
- *     volume (rule of thumb: tROAS needs 50+ conv/30d, tCPA needs 30+).
- *   - High `search_budget_lost_impression_share` (>30%) — daily budget capping growth.
- *   - High `search_rank_lost_impression_share` (>40%) — bids too low / quality issue.
- *   - Maximize Conversions on a campaign that has clearly stabilized (move to tCPA).
- *   - Manual CPC on a campaign that has conversion history (move to tCPA/eCPC).
+ * Detection is deterministic (see _bidBudgetDetect_), so the LLM never sees the
+ * raw 144-campaign table or does any threshold arithmetic — it only writes the
+ * human copy for the issues the rules already flagged. This cut the prompt from
+ * ~5K tokens of tables to a compact candidate list, and makes severity stable.
  *
- * Reads: Raw_Campaigns.
- * Brain categories queried: bidding, scaling.
+ * Tunable thresholds (Config sheet, RULE_* keys — defaults in parens):
+ *   RULE_BUDGET_LOST_IS   (0.30) search budget-lost impression share to flag
+ *   RULE_RANK_LOST_IS     (0.40) search rank-lost impression share to flag
+ *   RULE_MIN_CONV_ROAS    (50)   min conversions before tROAS is trustworthy
+ *   RULE_MIN_CONV_CPA     (30)   min conversions before tCPA is trustworthy
+ *   RULE_IDLE_SPEND_RATIO (0.5)  spend/budget below this with no IS loss = idle
+ *
+ * Reads: Raw_Campaigns. Brain categories queried: bidding, scaling, structure.
  */
 
 function runBidBudgetAnalyst(opts) {
@@ -23,71 +25,157 @@ function runBidBudgetAnalyst(opts) {
     return { agent: 'bid_budget_analyst', findings: [], summary: 'No campaign data.' };
   }
 
-  return AgentCommon.runAgent({
+  return AgentCommon.runRuleBasedAgent({
     agentName:       'bid_budget_analyst',
     mode:            mode,
     brainCategories: ['bidding', 'scaling', 'structure'],
-    brainLimit:      6,
+    brainLimit:      5,
     persona:
-      'You are a Google Ads Bidding & Budget specialist. You evaluate whether ' +
-      'each campaign uses the right bid strategy for its data volume and ' +
-      'whether budget is being left on the table. You know exact volume ' +
-      'thresholds for smart bidding (tROAS ~50 conv/30d, tCPA ~30 conv/30d) ' +
-      'and how to read impression-share signals.',
+      'You are a Google Ads Bidding & Budget specialist. You translate flagged ' +
+      'bid-strategy and budget issues into clear, safe recommendations.',
     instructions:
-      'Analyze the campaigns and surface up to 8 BIDDING / BUDGET issues. Focus:\n' +
-      '  1. Wrong-strategy-for-volume: tROAS/tCPA on campaigns with <30 conversions.\n' +
-      '     Recommend a transitional strategy (Maximize Conversions or eCPC).\n' +
-      '  2. Budget-locked growth: search_budget_lost_is > 0.30 → propose budget ' +
-      '     increase capped by the SAFETY rail in CLAUDE.md (max 20%/run).\n' +
-      '  3. Rank-locked: search_rank_lost_is > 0.40 → bids too low or QS too low.\n' +
-      '     If QS data is available recommend a QS path; otherwise propose bid lift\n' +
-      '     capped at +30% (safety rail).\n' +
-      '  4. Mature campaigns still on Maximize Conversions → suggest moving to tCPA ' +
-      '     at the trailing CPA average.\n' +
-      '  5. Manual CPC on campaigns with >30 conversions → suggest eCPC or tCPA.\n' +
-      '  6. Idle budgets — campaigns far below daily budget with no IS loss → ' +
-      '     redirect budget to capacity-constrained campaigns.\n\n' +
-      'Use category="bidding" for #1 #4 #5; "performance" or "structure" for #2 #6 ' +
-      'where appropriate.\n' +
-      'Quantify in $: "campaign losing ~$X/day in capped impressions".\n' +
-      'Never recommend a single bid change >30% or a single budget shift >20%.',
-    data: { campaigns, targets: AgentCommon.getTargets() },
-    formatDataForPrompt(d) {
-      return _bidBudgetAnalystFormatData(d);
-    },
+      'Respect the safety rails from strategy: never recommend a single bid ' +
+      'change >30% or a budget shift >20% per run. Prefer transitional bid ' +
+      'strategies (Maximize Conversions / eCPC) when volume is too low for ' +
+      'smart bidding.',
+    data:            { campaigns: campaigns },
+    ruleConfig:      RulesEngine.load({
+      BUDGET_LOST_IS:   0.30,
+      RANK_LOST_IS:     0.40,
+      MIN_CONV_ROAS:    50,
+      MIN_CONV_CPA:     30,
+      IDLE_SPEND_RATIO: 0.5,
+    }),
+    detect:          _bidBudgetDetect_,
+    maxCandidates:   8,
+    maxTokens:       2200,
   });
 }
 
-function _bidBudgetAnalystFormatData(d) {
-  const lines = [];
-  const cur = AgentCommon.getCurrency();
-  lines.push('Campaigns (sorted by cost):');
-  lines.push('id | name | bidding_strategy | tCPA | tROAS | budget/day | spend | conv | conv_value | search_IS | budget_lost_IS | rank_lost_IS');
-  const top = d.campaigns
-    .slice()
-    .sort((a, b) => b.cost_micros - a.cost_micros)
-    .slice(0, 40);
-  for (const c of top) {
-    const tcpa  = c.target_cpa_micros > 0 ? cur + AgentCommon.micros(c.target_cpa_micros).toFixed(2) : 'n/a';
-    const troas = c.target_roas > 0 ? c.target_roas.toFixed(2) : 'n/a';
-    lines.push(
-      `${c.campaign_id} | ${c.campaign_name} | ${c.bidding_strategy} | ${tcpa} | ${troas} | ` +
-      `${cur}${AgentCommon.micros(c.budget_micros).toFixed(2)} | ${cur}${AgentCommon.micros(c.cost_micros).toFixed(2)} | ` +
-      `${c.conversions} | ${cur}${(c.conversion_value || 0).toFixed(2)} | ` +
-      `${(c.search_is * 100).toFixed(0)}% | ${(c.search_budget_lost_is * 100).toFixed(0)}% | ${(c.search_rank_lost_is * 100).toFixed(0)}%`
-    );
+/**
+ * Deterministic detection. Returns candidate findings with all structured
+ * fields set; the runner adds LLM-written prose. ctx = { targets, cur, cfg }.
+ */
+function _bidBudgetDetect_(data, ctx) {
+  const cfg  = ctx.cfg;
+  const cur  = ctx.cur;
+  const out  = [];
+
+  for (const c of data.campaigns) {
+    const spend  = AgentCommon.micros(c.cost_micros);
+    const budget = AgentCommon.micros(c.budget_micros);
+    const conv   = Number(c.conversions) || 0;
+    const strat  = String(c.bidding_strategy || '').toUpperCase();
+    const tgt    = { type: 'campaign', id: String(c.campaign_id), name: c.campaign_name };
+
+    const budgetLost = Number(c.search_budget_lost_is) || 0;
+    const rankLost   = Number(c.search_rank_lost_is) || 0;
+
+    // 1. Budget-capped growth.
+    if (budgetLost > cfg.budget_lost_is) {
+      out.push({
+        id: 'budget-locked-' + c.campaign_id, category: 'performance',
+        severity: 'P1', magnitude: 'high', confidence: 'high', effort: 'easy',
+        metric: 'conversions', direction: 'up', target: tgt,
+        hint: 'Budget-capped: losing impression share to a too-small daily budget. ' +
+              'Recommend a budget increase capped at +20% this run.',
+        evidence: [
+          'search_budget_lost_is=' + (budgetLost * 100).toFixed(0) + '%',
+          'budget ' + cur + budget.toFixed(0) + '/day, spend ' + cur + spend.toFixed(0),
+          conv + ' conversions',
+        ],
+      });
+    }
+
+    // 2. Rank-capped (bids or QS too low).
+    if (rankLost > cfg.rank_lost_is) {
+      out.push({
+        id: 'rank-locked-' + c.campaign_id, category: 'bidding',
+        severity: 'P2', magnitude: 'medium', confidence: 'medium', effort: 'medium',
+        metric: 'CPA', direction: 'down', target: tgt,
+        hint: 'Rank-capped: bids and/or Quality Score too low to show competitively. ' +
+              'Recommend a QS path, or a bid lift capped at +30% this run.',
+        evidence: [
+          'search_rank_lost_is=' + (rankLost * 100).toFixed(0) + '%',
+          'strategy ' + strat, conv + ' conversions',
+        ],
+      });
+    }
+
+    // 3. Smart bidding on too little volume.
+    const isRoas = strat.indexOf('ROAS') >= 0 || strat.indexOf('CONVERSION_VALUE') >= 0;
+    const isCpa  = strat.indexOf('TARGET_CPA') >= 0;
+    if (isRoas && conv < cfg.min_conv_roas) {
+      out.push({
+        id: 'thin-roas-' + c.campaign_id, category: 'bidding',
+        severity: 'P2', magnitude: 'medium', confidence: 'high', effort: 'medium',
+        metric: 'ROAS', direction: 'up', target: tgt,
+        hint: 'tROAS with too few conversions to learn from. Recommend a transitional ' +
+              'strategy (Maximize Conversions or eCPC) until volume builds.',
+        evidence: [strat, conv + ' conv (<' + cfg.min_conv_roas + ' needed for tROAS)'],
+      });
+    } else if (isCpa && conv < cfg.min_conv_cpa) {
+      out.push({
+        id: 'thin-cpa-' + c.campaign_id, category: 'bidding',
+        severity: 'P2', magnitude: 'medium', confidence: 'high', effort: 'medium',
+        metric: 'CPA', direction: 'down', target: tgt,
+        hint: 'tCPA with too few conversions to learn from. Recommend a transitional ' +
+              'strategy (Maximize Conversions or eCPC) until volume builds.',
+        evidence: [strat, conv + ' conv (<' + cfg.min_conv_cpa + ' needed for tCPA)'],
+      });
+    }
+
+    // 4. Mature campaign still on Maximize Conversions → graduate to tCPA.
+    if (strat.indexOf('MAXIMIZE_CONVERSIONS') >= 0 && conv >= cfg.min_conv_cpa) {
+      const cpa = conv > 0 ? spend / conv : 0;
+      out.push({
+        id: 'graduate-tcpa-' + c.campaign_id, category: 'bidding',
+        severity: 'P3', magnitude: 'low', confidence: 'medium', effort: 'easy',
+        metric: 'CPA', direction: 'down', target: tgt,
+        hint: 'Enough conversion history to graduate from Maximize Conversions to ' +
+              'Target CPA set near the recent average CPA.',
+        evidence: [conv + ' conversions', 'recent CPA ~' + cur + cpa.toFixed(0)],
+      });
+    }
+
+    // 5. Manual CPC with real conversion history.
+    if (strat.indexOf('MANUAL') >= 0 && conv > cfg.min_conv_cpa) {
+      out.push({
+        id: 'manual-to-smart-' + c.campaign_id, category: 'bidding',
+        severity: 'P2', magnitude: 'medium', confidence: 'medium', effort: 'easy',
+        metric: 'CPA', direction: 'down', target: tgt,
+        hint: 'Manual CPC despite a useful conversion history. Recommend eCPC or tCPA ' +
+              'to let smart bidding optimise.',
+        evidence: [strat, conv + ' conversions'],
+      });
+    }
+
+    // 6. Idle / over-allocated budget.
+    if (budget > 0 && spend < cfg.idle_spend_ratio * budget && budgetLost < 0.05 && conv > 0) {
+      out.push({
+        id: 'idle-budget-' + c.campaign_id, category: 'performance',
+        severity: 'P3', magnitude: 'low', confidence: 'medium', effort: 'medium',
+        metric: 'spend', direction: 'down', target: tgt,
+        hint: 'Spending well below its daily budget with no impression-share loss — ' +
+              'budget could be reallocated to capacity-constrained campaigns.',
+        evidence: [
+          'spend ' + cur + spend.toFixed(0) + ' of ' + cur + budget.toFixed(0) + ' budget',
+          'budget_lost_is=' + (budgetLost * 100).toFixed(0) + '%',
+        ],
+      });
+    }
   }
-  return lines.join('\n');
+
+  return out;
 }
 
 function testBidBudgetAnalyst() {
   log_('test', '═══════════════════════════════════════════');
-  log_('test', 'BidBudgetAnalyst dry run');
+  log_('test', 'BidBudgetAnalyst dry run (rule-based)');
   log_('test', '═══════════════════════════════════════════');
   const r = runBidBudgetAnalyst({ mode: 'daily' });
   log_('test', `Summary: ${r.summary}`);
-  log_('test', `Findings: ${r.findings.length}, dropped: ${r.dropped}, tokens: ${r.tokens}, ${r.run_time_ms}ms`);
+  log_('test', `Findings: ${r.findings.length}, provider: ${r.provider}, tokens: ${r.tokens}, ${r.run_time_ms}ms`);
   for (const f of r.findings.slice(0, 3)) {
     log_('test', `  [${f.severity}] ${f.title}`);
     log_('test', `    target: ${f.target.type} ${f.target.name} (${f.target.id})`);
