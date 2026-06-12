@@ -1,0 +1,29 @@
+name: hourly-implementation
+
+on:
+  schedule:
+    # Every hour, on the hour.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run hourly-implementation
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

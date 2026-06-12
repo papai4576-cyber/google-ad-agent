@@ -50,11 +50,11 @@ const REQUIRED_PROPS = [
   'GROQ_API_KEY',
   'SPREADSHEET_ID',
   'BRAIN_DRIVE_FOLDER_ID',
-  // The next four become required when the Slack gate is wired (phase 11).
-  // They are documented here so SETUP.md can refer to one source of truth.
-  // 'SLACK_BOT_TOKEN',
-  // 'SLACK_WEBHOOK_URL',
-  // 'SLACK_CHANNEL_ID',
+  // Slack gate (Phase 12) — required once Slack Script Properties are set.
+  'SLACK_BOT_TOKEN',
+  'SLACK_WEBHOOK_URL',
+  'SLACK_CHANNEL_ID',
+  // ADS_SCRIPT_EXECUTE_URL becomes required in Phase 13 (execute mode).
   // 'ADS_SCRIPT_EXECUTE_URL',
 ];
 
@@ -76,15 +76,10 @@ const LLM = {
 };
 
 /* ============================================================================
- * Multi-provider LLM registry. Groq is OpenAI-compatible; Gemini uses Google's
- * generativelanguage REST API. llm.js dispatches on `provider` and normalises
- * both responses to one shape, so agents never see the difference.
- *
- * Why two providers: Groq (Llama 3.3 70B) is the stronger reasoner but is
- * capped at 100K tokens/DAY on the free tier. Gemini 2.0 Flash has a SEPARATE
- * free quota (1,500 req/day, 1M tokens/min) and is fast. We route the routine,
- * rule-heavy agents to Gemini to preserve Groq's daily budget for the agents
- * that actually need deep reasoning — and fail over between them automatically.
+ * LLM provider registry — Groq only.
+ * All 14 audit/copy agents call Groq (Llama 3.3 70B Versatile).
+ * Free-tier limit: 100K tokens/day (resets 00:00 UTC).
+ * Proactive ceiling in GROQ_DAILY_TOKEN_CEILING (Config sheet, default 90K).
  * ========================================================================== */
 const LLM_PROVIDERS = {
   groq: {
@@ -93,73 +88,9 @@ const LLM_PROVIDERS = {
     model:      'llama-3.3-70b-versatile',
     apiKeyProp: 'GROQ_API_KEY',
   },
-  gemini: {
-    // {model} is substituted at call time; key is passed as ?key= query param.
-    // gemini-2.0-flash was retired for generateContent (404). gemini-2.5-flash
-    // is the current fast/free-tier model. To change models, edit only this line.
-    provider:   'gemini',
-    endpoint:   'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
-    model:      'gemini-2.5-flash',
-    apiKeyProp: 'GEMINI_API_KEY',
-  },
 };
 
-// Fallback default when an agent has no explicit assignment and Config sets none.
 const LLM_DEFAULT_PROVIDER = 'groq';
-
-/* ============================================================================
- * Agent → provider assignment ("who is good at what").
- *
- *   Groq   = judgment / nuanced reasoning agents
- *   Gemini = rule/data-heavy agents that mostly apply thresholds to tables
- *            (offloads them from Groq's scarce daily token budget)
- *
- * Tunable at runtime: a Config-sheet key `LLM_FORCE_PROVIDER` (groq|gemini)
- * overrides EVERY agent (handy for testing or when one provider is down).
- * A per-agent override can also be set via Config key `LLM__<agent_name>`.
- * ========================================================================== */
-const AGENT_LLM = {
-  // ── Groq: reasoning-heavy ──────────────────────────────────────────────
-  performance_analyst:          'groq',
-  ad_copy_critic:               'groq',
-  search_term_pattern_analyzer: 'groq',
-  category_trend_spotter:       'groq',
-  audience_analyst:             'groq',
-  keyword_miner:                'groq',
-  negative_kw_hunter:           'groq',
-  competitive_intel:            'groq',
-  // ── Gemini Flash: rule/data-heavy ──────────────────────────────────────
-  bid_budget_analyst:           'gemini',
-  quality_score_inspector:      'gemini',
-  conversion_health_checker:    'gemini',
-  account_structure_reviewer:   'gemini',
-  extension_auditor:            'gemini',
-  landing_page_scorer:          'gemini',
-};
-
-/**
- * Resolve which provider an agent should use. Precedence:
- *   1. Config `LLM_FORCE_PROVIDER` (forces all agents — testing/outage switch)
- *   2. Config per-agent override `LLM__<agent_name>`
- *   3. AGENT_LLM static assignment
- *   4. LLM_DEFAULT_PROVIDER
- * Always returns a valid key present in LLM_PROVIDERS.
- */
-function pickProvider(agentName) {
-  let p = null;
-
-  const forced = getConfig('LLM_FORCE_PROVIDER', '');
-  if (forced) p = String(forced).toLowerCase().trim();
-
-  if (!p && agentName) {
-    const override = getConfig('LLM__' + agentName, '');
-    if (override) p = String(override).toLowerCase().trim();
-  }
-  if (!p && agentName) p = AGENT_LLM[agentName] || null;
-  if (!p) p = LLM_DEFAULT_PROVIDER;
-
-  return LLM_PROVIDERS[p] ? p : LLM_DEFAULT_PROVIDER;
-}
 
 /* ============================================================================
  * Account targets and safety rails — these are SOURCED FROM the Config sheet
@@ -217,6 +148,11 @@ const SHEETS = {
   Dashboard: {
     description: 'Human-readable KPI summary + last-run status + Reddit digest',
     headers: ['Section', 'Metric', 'Value', 'As Of', 'Notes'],
+  },
+  Token_Log: {
+    description: 'Per-day LLM token usage by provider (durable history of the ' +
+                 'Script-Property ledger). Powers the dashboard usage section.',
+    headers: ['date', 'provider', 'total_tokens', 'requests', 'updated_at'],
   },
   Brain: {
     description: 'Indexed strategy knowledge from Drive uploads + Reddit intel',
@@ -295,16 +231,6 @@ const SHEETS = {
       'text', 'match_type',
     ],
   },
-  Raw_SearchConsole: {
-    description: 'Organic queries — written by SearchConsoleFetcher (phase 2)',
-    headers: [
-      'run_date', 'query', 'page', 'impressions', 'clicks', 'ctr', 'position',
-    ],
-  },
-  Raw_Trends: {
-    description: 'Category interest over time — written by TrendsFetcher',
-    headers: ['run_date', 'keyword', 'date', 'interest_score', 'geo'],
-  },
   Findings: {
     description: 'All findings from all 15 agents (one row per finding)',
     headers: [
@@ -320,7 +246,8 @@ const SHEETS = {
     description: 'Synthesised + scored P1/P2/P3 plan, one row per action item',
     headers: [
       'run_date', 'plan_id', 'finding_id', 'priority', 'title', 'what', 'why',
-      'action', 'target_type', 'target_id', 'target_name', 'score',
+      'action', 'action_category', 'action_type',
+      'target_type', 'target_id', 'target_name', 'score',
       'slack_message_ts', 'status',
     ],
   },
@@ -329,6 +256,17 @@ const SHEETS = {
     headers: [
       'timestamp', 'plan_id', 'finding_id', 'reaction',
       'user_id', 'status', 'notes',
+    ],
+  },
+  Pending_Changes: {
+    description: 'Execution QUEUE — structured, rail-validated changes derived ' +
+                 'from APPROVED Action_Plan items. The Google Ads Script (execute ' +
+                 'mode) pulls status=queued rows, applies them, and reports back.',
+    headers: [
+      'change_id', 'created_at', 'run_date', 'plan_id', 'finding_id',
+      'change_type', 'target_type', 'target_id', 'target_name',
+      'field', 'before_value', 'after_value',
+      'status', 'dry_run', 'executed_at', 'result', 'error',
     ],
   },
   Change_Log: {
@@ -407,4 +345,85 @@ const RUN_CONTEXT = { run_date: null };
 
 function runDateForWrite_() {
   return RUN_CONTEXT.run_date || todayString_();
+}
+
+/* ============================================================================
+ * LLM TOKEN LEDGER — fast per-provider daily token counters kept in Script
+ * Properties (no sheet I/O on the hot path). Keyed by UTC date because Groq's
+ * free-tier daily token quota resets at 00:00 UTC — aligning the ledger to UTC
+ * keeps the proactive ceiling honest against the real limit.
+ *
+ *   TOK_<provider>_<YYYY-MM-DD>  cumulative tokens today
+ *   REQ_<provider>_<YYYY-MM-DD>  request count today
+ *
+ * The proactive ceiling lets callLLM skip a provider BEFORE it blows its daily
+ * cap (and fail over to the other), instead of only reacting to a 429.
+ * ========================================================================== */
+function utcDateString_() {
+  const d = new Date();
+  const y  = d.getUTCFullYear();
+  const m  = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+function tokensUsedToday(provider) {
+  const v = PROPS.get('TOK_' + provider + '_' + utcDateString_());
+  return v ? (parseInt(v, 10) || 0) : 0;
+}
+
+function requestsToday(provider) {
+  const v = PROPS.get('REQ_' + provider + '_' + utcDateString_());
+  return v ? (parseInt(v, 10) || 0) : 0;
+}
+
+function recordTokenUsage_(provider, totalTokens) {
+  const date = utcDateString_();
+  PROPS.set('TOK_' + provider + '_' + date, String(tokensUsedToday(provider) + (Number(totalTokens) || 0)));
+  PROPS.set('REQ_' + provider + '_' + date, String(requestsToday(provider) + 1));
+}
+
+/** Daily token ceiling for Groq (Config-tunable). 0 = no ceiling. */
+function dailyTokenCeiling(provider) {
+  if (provider === 'groq') return parseFloat(getConfig('GROQ_DAILY_TOKEN_CEILING', '90000')) || 0;
+  return 0;
+}
+
+function overDailyCeiling_(provider) {
+  const ceil = dailyTokenCeiling(provider);
+  if (!ceil || ceil <= 0) return false;        // 0 ⇒ unlimited
+  return tokensUsedToday(provider) >= ceil;
+}
+
+/**
+ * Upsert today's per-provider totals into the Token_Log sheet (durable history
+ * for the dashboard/audit). Safe no-op if the tab doesn't exist yet. Called
+ * once per run (not per call), so no hot-path latency.
+ */
+function snapshotTokenUsageToSheet_() {
+  const ss = SpreadsheetApp.openById(PROPS.require('SPREADSHEET_ID'));
+  const sheet = ss.getSheetByName('Token_Log');
+  if (!sheet) return;
+  const headers = SHEETS.Token_Log.headers;
+  const date = utcDateString_();
+  const last = sheet.getLastRow();
+  const data = last > 1 ? sheet.getRange(2, 1, last - 1, headers.length).getValues() : [];
+  const dIdx = headers.indexOf('date'), pIdx = headers.indexOf('provider');
+
+  for (const prov of ['groq']) {
+    let rowNum = -1;
+    for (let i = 0; i < data.length; i++) {
+      let dv = data[i][dIdx];
+      if (dv instanceof Date) dv = Utilities.formatDate(dv, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      if (String(dv).trim() === date && String(data[i][pIdx]).trim() === prov) { rowNum = i + 2; break; }
+    }
+    const rowMap = {
+      date: date, provider: prov,
+      total_tokens: tokensUsedToday(prov), requests: requestsToday(prov),
+      updated_at: nowIso_(),
+    };
+    const arr = headers.map(h => (rowMap[h] !== undefined ? rowMap[h] : ''));
+    if (rowNum > 0) sheet.getRange(rowNum, 1, 1, headers.length).setValues([arr]);
+    else sheet.appendRow(arr);
+  }
 }

@@ -50,6 +50,14 @@ function runSynthesisManager(opts) {
     log_('synth_mgr', `  merged ${m.merged_finding_ids.join(', ')} → ${m.primary_finding_id}`);
   }
 
+  // 2b. Cross-agent patterns — add synthesised findings after dedup.
+  const patterns = _detectCrossAgentPatterns_(dedup.deduped, runDate);
+  if (patterns.length > 0) {
+    log_('synth_mgr', `Cross-agent patterns: ${patterns.length} new synthetic findings added.`);
+    for (const p of patterns) log_('synth_mgr', `  [${p.severity}] ${p.title}`);
+    dedup.deduped.push(...patterns);
+  }
+
   // 3. Score + assign priority.
   const score = ImpactScorer.run(dedup.deduped);
   log_('synth_mgr',
@@ -79,6 +87,136 @@ function runSynthesisManager(opts) {
     severity_overrides: score.stats.overrides,
     run_time_ms:    totalMs,
   };
+}
+
+/* ===========================================================================
+ * Cross-agent pattern detection — runs after dedup, before scoring.
+ * Generates synthetic P1 findings where multiple agents surface the same
+ * root cause on the same entity from different angles.
+ *
+ * All findings at this point are flat Sheets rows with these key fields:
+ *   agent, finding_id, target_type, target_id, target_name,
+ *   impact_magnitude, confidence, effort, severity, evidence_json
+ * ========================================================================= */
+function _detectCrossAgentPatterns_(findings, runDate) {
+  const out  = [];
+  const date = runDate || todayString_();
+
+  // Index: finding_id prefix → array of findings matching that prefix pattern.
+  function byIdPrefix(agent, prefix) {
+    return findings.filter(function(f) {
+      return String(f.agent || '') === agent &&
+             String(f.finding_id || '').indexOf(prefix) === 0;
+    });
+  }
+
+  // ── Pattern 1: Rank-locked AND high CPA on the same campaign ─────────────
+  // Bid raises will increase waste, not performance — structural fix required.
+  const rankLocked = byIdPrefix('bid_budget_analyst', 'rank-locked-');
+  const cpaOverage = byIdPrefix('performance_analyst', 'cpa-overage-');
+  for (const rl of rankLocked) {
+    const tid   = String(rl.target_id || '').trim();
+    const match = cpaOverage.find(function(f) { return String(f.target_id || '').trim() === tid; });
+    if (match) {
+      out.push({
+        finding_id:         'sp-rank-cpa-trap-' + tid,
+        agent:              'synthesis_pattern',
+        run_date:           date,
+        mode:               rl.mode || 'daily',
+        category:           'structure',
+        severity:           'P1',
+        title:              'Bid raises won\'t fix ' + (rl.target_name || tid) + ' — QS fix first',
+        what:               'Campaign is both rank-locked (bids/QS too low for competitive auctions) AND over-target CPA. Raising bids here increases cost without winning better placements.',
+        why:                'Rank IS loss driven by low QS means the issue is ad relevance or landing-page experience — not bid level. Adding budget into this state is waste.',
+        action:             '1. Diagnose the QS root cause on the top-spend keywords in this campaign. 2. Fix ad relevance or landing page first. 3. Only re-evaluate bids once expected CTR component improves.',
+        target_type:        rl.target_type || 'campaign',
+        target_id:          tid,
+        target_name:        rl.target_name || tid,
+        impact_metric:      'CPA',
+        impact_direction:   'down',
+        impact_magnitude:   'high',
+        confidence:         'high',
+        effort:             'hard',
+        evidence_json:      JSON.stringify(['rank-locked finding: ' + rl.finding_id, 'cpa-overage finding: ' + match.finding_id]),
+        brain_sources_json: '[]',
+      });
+    }
+  }
+
+  // ── Pattern 2: Budget misallocation — idle donor + budget-locked receiver ─
+  const idleBudget   = byIdPrefix('bid_budget_analyst', 'idle-budget-');
+  const budgetLocked = byIdPrefix('bid_budget_analyst', 'budget-locked-');
+  if (idleBudget.length > 0 && budgetLocked.length > 0) {
+    const donors    = idleBudget.map(function(f)   { return f.target_name || f.target_id; }).join(', ');
+    const receivers = budgetLocked.map(function(f) { return f.target_name || f.target_id; }).join(', ');
+    out.push({
+      finding_id:         'sp-budget-misalloc-' + date,
+      agent:              'synthesis_pattern',
+      run_date:           date,
+      mode:               budgetLocked[0].mode || 'daily',
+      category:           'performance',
+      severity:           'P1',
+      title:              'Budget misallocation: idle budget while other campaigns are starved',
+      what:               'Budget sits under-spent on [' + donors + '] while [' + receivers + '] are budget-capped and losing impression share.',
+      why:                'Moving budget from idle campaigns to budget-locked performers increases total conversions at the same total spend.',
+      action:             'Move up to 20% of daily budget from idle campaign(s) to budget-locked campaign(s). Monitor IS and conversion rate for 7 days before further increases.',
+      target_type:        'campaign',
+      target_id:          budgetLocked[0].target_id || 'account',
+      target_name:        'Multiple campaigns',
+      impact_metric:      'conversions',
+      impact_direction:   'up',
+      impact_magnitude:   'high',
+      confidence:         'medium',
+      effort:             'easy',
+      evidence_json:      JSON.stringify([
+        'idle donors: ' + idleBudget.map(function(f) { return f.finding_id; }).join(', '),
+        'budget-locked receivers: ' + budgetLocked.map(function(f) { return f.finding_id; }).join(', '),
+      ]),
+      brain_sources_json: '[]',
+    });
+  }
+
+  // ── Pattern 3: Account-wide copy quality + QS expected-CTR drag ──────────
+  // Low-CTR ads and below-average expected CTR keywords coexist → systemic.
+  const lowCtrAds = findings.filter(function(f) {
+    return String(f.agent || '') === 'ad_copy_critic' &&
+           String(f.finding_id || '').indexOf('low-ctr-ad') === 0;
+  });
+  const lowExpCtrKws = findings.filter(function(f) {
+    if (String(f.agent || '') !== 'quality_score_inspector') return false;
+    var ev = String(f.evidence_json || '');
+    return ev.indexOf('expCTR=BELOW_AVERAGE') >= 0;
+  });
+  if (lowCtrAds.length >= 2 && lowExpCtrKws.length >= 2) {
+    out.push({
+      finding_id:         'sp-copy-qs-systemic-' + date,
+      agent:              'synthesis_pattern',
+      run_date:           date,
+      mode:               lowCtrAds[0].mode || 'daily',
+      category:           'copy',
+      severity:           'P1',
+      title:              'Systemic copy quality issue: low-CTR ads driving below-average expected CTR',
+      what:               lowCtrAds.length + ' ads have below-median CTR and ' + lowExpCtrKws.length + ' keywords show below-average expected CTR in QS — the same root cause across the account.',
+      why:                'Expected CTR is the most changeable QS component and is primarily driven by ad copy. Fixing copy at scale improves CTR, QS, and CPC efficiency account-wide.',
+      action:             '1. Prioritise AdCopyCritic recommendations for the flagged ads. 2. Aim to move Expected CTR component from Below Average to Average within 14 days. 3. Track QS sub-component distribution weekly.',
+      target_type:        'account',
+      target_id:          'account',
+      target_name:        'Account-wide',
+      impact_metric:      'CTR',
+      impact_direction:   'up',
+      impact_magnitude:   'high',
+      confidence:         'medium',
+      effort:             'medium',
+      evidence_json:      JSON.stringify([
+        lowCtrAds.length + ' low-CTR ads flagged by ad_copy_critic',
+        lowExpCtrKws.length + ' keywords with expCTR=BELOW_AVERAGE',
+        'sample ads: ' + lowCtrAds.slice(0, 3).map(function(f) { return f.finding_id; }).join(', '),
+      ]),
+      brain_sources_json: '[]',
+    });
+  }
+
+  return out;
 }
 
 /* ===========================================================================

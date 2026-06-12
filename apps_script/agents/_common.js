@@ -566,10 +566,8 @@ const AgentCommon = {
       '--- DATA ---\n' +
       spec.formatDataForPrompt(spec.data);
 
-    const provider = pickProvider(spec.agentName);
     const llm = callLLM(systemPrompt, userPrompt, {
       label:       spec.agentName,
-      provider:    provider,
       max_tokens:  spec.maxTokens || 3500,
       temperature: 0.2,
     });
@@ -653,10 +651,8 @@ const AgentCommon = {
       '--- PRE-DETECTED ISSUES (write each one up; do NOT add or drop any) ---\n' +
       this._renderCandidates_(candidates);
 
-    const provider = pickProvider(spec.agentName);
     const llm = callLLM(systemPrompt, userPrompt, {
       label:       spec.agentName,
-      provider:    provider,
       max_tokens:  spec.maxTokens || 2000,
       temperature: 0.2,
     });

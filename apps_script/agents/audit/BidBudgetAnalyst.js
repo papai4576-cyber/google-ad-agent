@@ -164,6 +164,20 @@ function _bidBudgetDetect_(data, ctx) {
         ],
       });
     }
+
+    // 7. tROAS with zero conversion value — algorithm has no signal to optimise toward.
+    const convVal = Number(c.conversion_value) || 0;
+    if (isRoas && convVal === 0 && spend > 0) {
+      out.push({
+        id: 'troas-no-value-' + c.campaign_id, category: 'bidding',
+        severity: 'P1', magnitude: 'high', confidence: 'high', effort: 'easy',
+        metric: 'ROAS', direction: 'up', target: tgt,
+        hint: 'tROAS / Maximize Conversion Value campaign has recorded zero conversion ' +
+              'value — the algorithm is bidding blind. Switch to tCPA or Maximize ' +
+              'Conversions immediately, and verify conversion value tracking.',
+        evidence: [strat, 'conversion_value=0', 'spend ' + cur + spend.toFixed(0)],
+      });
+    }
   }
 
   return out;

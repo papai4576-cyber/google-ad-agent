@@ -6,9 +6,10 @@
  * competition. The LLM only writes the human copy.
  *
  * Tunable thresholds (Config, RULE_* — defaults in parens):
- *   RULE_MAX_ADGROUPS_PER_CAMPAIGN (30) above this a campaign is "bloated"
- *   RULE_MAX_KEYWORDS_PER_ADGROUP  (20) above this an ad group is "bloated"
- *   RULE_MIN_ACTIVE_ADS            (2)  ad groups below this violate the rail
+ *   RULE_MAX_ADGROUPS_PER_CAMPAIGN  (30)   above this a campaign is "bloated"
+ *   RULE_MAX_KEYWORDS_PER_ADGROUP   (20)   above this an ad group is "bloated"
+ *   RULE_MIN_ACTIVE_ADS             (2)    ad groups below this violate the rail
+ *   RULE_MIN_SPEND_CONCENTRATION    (1000) campaign spend above this with only 1 ad group = concentration risk
  *
  * Reads: Raw_Campaigns + Raw_AdGroups + Raw_Keywords + Raw_Ads.
  * Brain categories: structure, scaling, general.
@@ -40,9 +41,10 @@ function runAccountStructureReviewer(opts) {
       'name the split, the consolidation, or the ad to add.',
     data:            { campaigns: campaigns, adGroups: adGroups, keywords: keywords, ads: ads },
     ruleConfig:      RulesEngine.load({
-      MAX_ADGROUPS_PER_CAMPAIGN: 30,
-      MAX_KEYWORDS_PER_ADGROUP:  20,
-      MIN_ACTIVE_ADS:            2,
+      MAX_ADGROUPS_PER_CAMPAIGN:  30,
+      MAX_KEYWORDS_PER_ADGROUP:   20,
+      MIN_ACTIVE_ADS:             2,
+      MIN_SPEND_CONCENTRATION:    1000,
     }),
     detect:          _structureDetect_,
     maxCandidates:   6,
@@ -63,9 +65,11 @@ function _structureDetect_(data, ctx) {
     if (ad.status === 'ENABLED') (adsByAg[ad.ad_group_id] = adsByAg[ad.ad_group_id] || []).push(ad);
   }
 
-  // Bloated campaigns.
+  // Bloated campaigns + single-ad-group concentration risk.
   for (const c of data.campaigns) {
-    const ags = agByCampaign[c.campaign_id] || [];
+    const ags   = agByCampaign[c.campaign_id] || [];
+    const spend = AgentCommon.micros(c.cost_micros);
+    const cur   = ctx.cur;
     if (ags.length > cfg.max_adgroups_per_campaign) {
       out.push({
         id: 'bloated-campaign-' + c.campaign_id, category: 'structure',
@@ -75,6 +79,19 @@ function _structureDetect_(data, ctx) {
         hint: 'Campaign has a very large number of ad groups — consider splitting by ' +
               'theme or funnel stage for cleaner budget control and reporting.',
         evidence: [ags.length + ' ad groups'],
+      });
+    }
+    // Single-ad-group concentration risk: all traffic in one ad group → no rotation data.
+    if (ags.length === 1 && spend >= cfg.min_spend_concentration) {
+      out.push({
+        id: 'single-ag-risk-' + c.campaign_id, category: 'structure',
+        severity: 'P2', magnitude: 'medium', confidence: 'high', effort: 'medium',
+        metric: 'CTR', direction: 'up',
+        target: { type: 'campaign', id: String(c.campaign_id), name: c.campaign_name },
+        hint: 'Campaign with ' + cur + spend.toFixed(0) + ' spend has only 1 ad group — ' +
+              'concentration risk. Split into 2-3 themed ad groups so you can A/B copy, ' +
+              'control bids per theme, and isolate QS drivers.',
+        evidence: ['1 ad group', 'spend ' + cur + spend.toFixed(0)],
       });
     }
   }

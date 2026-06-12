@@ -28,23 +28,29 @@ function runCompetitiveIntel(opts) {
     brainCategories: ['competitive', 'brand', 'keywords'],
     brainLimit:      5,
     persona:
-      'You are a Google Ads competitive intel specialist. You spot competitor ' +
-      'incursions into the account and brand defense gaps. You read search ' +
-      'queries containing competitor brand names and you watch impression-share ' +
-      'signals for share-of-voice loss.',
+      'You are a senior Google Ads competitive intel specialist. You spot competitor ' +
+      'incursions into the account and brand defense gaps. You cite real numbers ' +
+      'from the data — impression share percentages, spend amounts, query counts. ' +
+      'You never fabricate competitor activity. If the data does not show a clear ' +
+      'signal, you say so and return fewer findings rather than inventing issues.',
     instructions:
+      'You are a senior PPC analyst. Every finding must include a specific number ' +
+      'from the data as evidence (IS %, spend, impression count, query count). ' +
+      'Do not write generic recommendations. If you cannot find evidence for a ' +
+      'specific issue, do not invent one — return an empty findings array instead.\n\n' +
+      'Account targets: TARGET_CPA=' + getConfig('TARGET_CPA', 50) + ', ' +
+      'TARGET_ROAS=' + getConfig('TARGET_ROAS', 4.0) + '. Brand protection is ' +
+      'usually the cheapest CPC; defend it first.\n\n' +
       'Analyze competitive signals and surface up to 5 COMPETITIVE findings. Focus:\n' +
-      '  1. Brand defense gaps: if BRAND campaigns have impression_share < 90%, ' +
-      '     competitors may be bidding on the brand. Recommend raising bids or ' +
-      '     budget on brand specifically (cheapest CPC anyway).\n' +
-      '  2. Competitor conquesting opportunities: search terms that look like ' +
-      '     known competitor brand names mixed with category terms — flag for ' +
-      '     review as potential conquest targets (only if the user explicitly ' +
-      '     wants to conquest; be conservative).\n' +
-      '  3. Generic terms drawing competitor-comparison queries ("X vs Y") → ' +
-      '     suggest dedicated comparison-page ads / sitelinks.\n' +
+      '  1. Brand defense gaps: BRAND campaigns with impression_share < 90% — ' +
+      '     cite the exact IS %. Recommend bid or budget increase.\n' +
+      '  2. Competitor-comparison queries ("X vs Y", "X alternative") in the ' +
+      '     search-term mix — cite impression and conversion counts. Suggest ' +
+      '     dedicated comparison landing pages or sitelinks.\n' +
+      '  3. Rank IS loss on key non-brand campaigns alongside high CPCs — ' +
+      '     cite the rank_lost_IS % and current CPC.\n' +
       '  4. Honestly flag the data limitation: auction_insight_view is not ' +
-      '     collected yet; richer competitive findings require it.\n\n' +
+      '     collected yet; richer share-of-voice findings require it.\n\n' +
       'Use category="competitive". target.type = "campaign".',
     data: { searchTerms, keywords, campaigns, targets: AgentCommon.getTargets() },
     formatDataForPrompt(d) {

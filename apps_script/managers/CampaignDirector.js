@@ -73,8 +73,26 @@ function runCampaignDirector(opts) {
     synthesis = { error: String(e.message || e) };
   }
 
-  // ── Dashboard refresh (Phase 13) ────────────────────────────────────
+  // ── Slack gate — post plan to Slack ────────────────────────────────
+  let planSent = { auto_sent: 0, manual_digest_sent: 0, skipped: 0 };
+  try {
+    planSent = PlanSender.sendPlan(RUN_CONTEXT.run_date);
+    log_('director',
+      `Slack: ${planSent.auto_sent} auto item(s) posted for ✅/❌, ` +
+      `manual digest sent=${planSent.manual_digest_sent}.`);
+  } catch (e) {
+    log_('director', `PlanSender skipped: ${String(e.message || e).slice(0, 120)}`);
+  }
+
+  // ── Token usage snapshot + dashboard refresh ────────────────────────
   // Pure-Sheet read/write, no LLM — safe even if agents hit their TPD cap.
+  try {
+    snapshotTokenUsageToSheet_();
+    log_('director', `LLM usage today (UTC): groq=${tokensUsedToday('groq')} tok / ` +
+                     `${requestsToday('groq')} req.`);
+  } catch (e) {
+    log_('director', `Token snapshot failed: ${e.message || e}`);
+  }
   try {
     refreshDashboard();
   } catch (e) {
@@ -102,7 +120,9 @@ function runCampaignDirector(opts) {
   }
   log_('director', `  duration:  ${Math.round(totalMs / 100) / 10}s`);
   log_('director', '');
-  log_('director', 'Next phase (11) will send the P1/P2 items to Slack for approval.');
+  log_('director',
+    `Slack gate active — ${planSent.auto_sent} auto item(s) await ✅/❌; ` +
+    `manual digest posted=${planSent.manual_digest_sent}.`);
 
   const pinnedRunDate = RUN_CONTEXT.run_date;
   RUN_CONTEXT.run_date = null;   // release the run-scoped date pin

@@ -49,6 +49,7 @@ const PlanFormatter = {
       const planId = `plan_${datePart}_${seq}`;
       planIds.push(planId);
 
+      const meta = PlanFormatter._deriveActionMeta_(f);
       const map = {
         run_date:          runDate,
         plan_id:           planId,
@@ -58,6 +59,8 @@ const PlanFormatter = {
         what:              f.what,
         why:               f.why,
         action:            f.action,
+        action_category:   meta.action_category,
+        action_type:       meta.action_type,
         target_type:       f.target_type,
         target_id:         f.target_id,
         target_name:       f.target_name,
@@ -73,6 +76,50 @@ const PlanFormatter = {
   },
 
   /* ===== internals ===== */
+
+  /**
+   * Derive action_category (auto/manual/insight) and action_type from the
+   * agent name + finding_id prefix.
+   *
+   * auto   = ImplementationManager can execute this today (add_negatives, increase_budget)
+   * manual = human must do it; system describes what to do
+   * insight = informational only; no approval queue, no Slack ping
+   */
+  _deriveActionMeta_(f) {
+    const agent = String(f.agent || '');
+    const fid   = String(f.finding_id || '');
+
+    if (agent === 'negative_kw_hunter') {
+      return { action_category: 'auto', action_type: 'add_negatives' };
+    }
+    if (agent === 'bid_budget_analyst') {
+      if (fid.indexOf('budget-locked-') === 0) return { action_category: 'auto',   action_type: 'increase_budget' };
+      if (fid.indexOf('idle-budget-')   === 0) return { action_category: 'manual', action_type: 'reallocate_budget' };
+      return { action_category: 'manual', action_type: 'change_bid_strategy' };
+    }
+    if (agent === 'synthesis_pattern') {
+      if (fid.indexOf('sp-budget-misalloc-') === 0) return { action_category: 'auto',   action_type: 'increase_budget' };
+      return { action_category: 'manual', action_type: 'fix_quality_score' };
+    }
+    if (agent === 'competitive_intel' || agent === 'category_trend_spotter') {
+      return { action_category: 'insight', action_type: 'read_insight' };
+    }
+
+    const TYPE_MAP = {
+      performance_analyst:          'investigate_performance',
+      quality_score_inspector:      'fix_quality_score',
+      conversion_health_checker:    'fix_tracking',
+      audience_analyst:             'setup_audience',
+      account_structure_reviewer:   'restructure',
+      extension_auditor:            'add_extensions',
+      ad_copy_critic:               'update_copy',
+      keyword_miner:                'add_keywords',
+      search_term_pattern_analyzer: 'restructure',
+      landing_page_scorer:          'fix_landing_page',
+    };
+    const type = TYPE_MAP[agent] || 'manual_action';
+    return { action_category: 'manual', action_type: type };
+  },
 
   /**
    * Delete every row in Action_Plan whose run_date matches.

@@ -24,8 +24,19 @@
 
 function doPost(e) {
   try {
-    const payload = parsePayload_(e);
+    const payload = parseJson_(e);
     authorize_(payload);
+
+    // Phase 12: the Ads Script (execute mode) posts execution results back.
+    if (payload.cmd === 'execute_result') {
+      const summary = handleExecuteResults_(payload);
+      log_('execute', `results — ${JSON.stringify(summary)}`);
+      return jsonResponse_({ ok: true, applied: summary });
+    }
+
+    // Default: data ingest (collect mode).
+    if (!payload.data || typeof payload.data !== 'object') throw new Error('Missing "data" object in payload.');
+    if (!payload.run_date) throw new Error('Missing "run_date" in payload.');
 
     const written = writeAllTabs_(payload);
 
@@ -48,37 +59,105 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  // Provide a friendly health-check so you can visit the URL in a browser
-  // and see "ok" instead of a blank or error page.
+  // Phase 12: the Ads Script (execute mode) pulls the queued-change list.
+  // Auth via ?secret=... (GET has no body). Returns only status=queued rows.
+  if (e && e.parameter && e.parameter.cmd === 'pending') {
+    const expected = PROPS.get('INGEST_SECRET');
+    if (!expected || e.parameter.secret !== expected) {
+      return jsonResponse_({ ok: false, error: 'Forbidden: INGEST_SECRET mismatch.' });
+    }
+    return jsonResponse_({ ok: true, changes: readPendingChanges_() });
+  }
+  // Friendly health-check otherwise.
   return jsonResponse_({
     ok:      true,
     service: 'google-ads-agent-fleet ingest',
-    hint:    'POST data here from Google Ads Script. GET is a health check.',
+    hint:    'POST data here from Google Ads Script. GET is a health check. GET ?cmd=pending&secret=.. lists queued changes.',
     has_secret: PROPS.get('INGEST_SECRET') !== null,
   });
+}
+
+/* ===========================================================================
+ * Phase 12 — execution queue (pull) + results (push back).
+ * ========================================================================= */
+
+function readPendingChanges_() {
+  const ss = SpreadsheetApp.openById(PROPS.require('SPREADSHEET_ID'));
+  const sheet = ss.getSheetByName('Pending_Changes');
+  if (!sheet) return [];
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const h = SHEETS.Pending_Changes.headers;
+  const data = sheet.getRange(2, 1, last - 1, h.length).getValues();
+  const out = [];
+  for (const row of data) {
+    const o = {}; for (let i = 0; i < h.length; i++) o[h[i]] = row[i];
+    if (String(o.status).trim() !== 'queued') continue;
+    let params = {}; try { params = JSON.parse(o.result || '{}'); } catch (_e) { params = {}; }
+    out.push({
+      change_id: String(o.change_id), change_type: String(o.change_type),
+      target_type: String(o.target_type), target_id: String(o.target_id), target_name: String(o.target_name),
+      before_value: String(o.before_value), after_value: String(o.after_value), params: params,
+    });
+  }
+  return out;
+}
+
+function handleExecuteResults_(payload) {
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  const ss = SpreadsheetApp.openById(PROPS.require('SPREADSHEET_ID'));
+  const pend = ss.getSheetByName('Pending_Changes');
+  const log  = ss.getSheetByName('Change_Log');
+  if (!pend) throw new Error('Pending_Changes tab missing. Run setupEverything().');
+  const h = SHEETS.Pending_Changes.headers;
+  const last = pend.getLastRow();
+  const data = last > 1 ? pend.getRange(2, 1, last - 1, h.length).getValues() : [];
+  const idIdx = h.indexOf('change_id');
+
+  let done = 0, failed = 0;
+  for (const res of results) {
+    let rowNum = -1;
+    for (let i = 0; i < data.length; i++) { if (String(data[i][idIdx]) === String(res.change_id)) { rowNum = i + 2; break; } }
+    if (rowNum < 0) continue;
+    const row = data[rowNum - 2];
+    const obj = {}; for (let i = 0; i < h.length; i++) obj[h[i]] = row[i];
+
+    obj.status = res.success ? 'done' : 'failed';
+    obj.executed_at = nowIso_();
+    obj.result = res.success ? 'applied' : '';
+    obj.error = res.error || '';
+    pend.getRange(rowNum, 1, 1, h.length).setValues([h.map(k => (obj[k] !== undefined ? obj[k] : ''))]);
+    if (res.success) done++; else failed++;
+
+    // Mirror into Change_Log (the human-facing audit trail).
+    if (log) {
+      const lh = SHEETS.Change_Log.headers;
+      const lm = {
+        timestamp: nowIso_(), plan_id: obj.plan_id, finding_id: obj.finding_id, agent: 'ads_script_execute',
+        target_type: obj.target_type, target_id: obj.target_id, target_name: obj.target_name,
+        field_changed: obj.field, before_value: obj.before_value,
+        after_value: res.success ? obj.after_value : obj.before_value,
+        dry_run: false, success: res.success, error_message: res.error || '',
+      };
+      log.appendRow(lh.map(k => (lm[k] !== undefined ? lm[k] : '')));
+    }
+  }
+  return { done: done, failed: failed };
 }
 
 /* ===========================================================================
  * Payload validation
  * ========================================================================= */
 
-function parsePayload_(e) {
+function parseJson_(e) {
   if (!e || !e.postData || !e.postData.contents) {
     throw new Error('Empty request body. Expected JSON POST.');
   }
-  let parsed;
   try {
-    parsed = JSON.parse(e.postData.contents);
+    return JSON.parse(e.postData.contents);
   } catch (err) {
     throw new Error('Body is not valid JSON: ' + err.message);
   }
-  if (!parsed.data || typeof parsed.data !== 'object') {
-    throw new Error('Missing "data" object in payload.');
-  }
-  if (!parsed.run_date) {
-    throw new Error('Missing "run_date" in payload.');
-  }
-  return parsed;
 }
 
 function authorize_(payload) {

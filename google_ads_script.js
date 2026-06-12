@@ -1,5 +1,5 @@
 /**
- * google_ads_script.js — webhook architecture
+ * google_ads_script.js — v2 ingest architecture
  * ---------------------------------------------------------------------------
  * Runs INSIDE the Google Ads UI (Tools & Settings → Bulk Actions → Scripts).
  * NOT to be confused with Google Apps Script — this is a separate runtime
@@ -7,37 +7,33 @@
  *
  * This script:
  *   1. Fetches all account data into in-memory arrays.
- *   2. POSTs the full payload to your Apps Script Web App as JSON.
- *   3. The Apps Script Web App writes the data to the Sheet.
+ *   2. POSTs the full payload as JSON to the Next.js /api/ingest route
+ *      (Bearer-token auth), which writes the raw snapshot tables in Postgres.
  *
  * Why this architecture: Google Ads Scripts in a Workspace tenant often can't
- * authorize direct Sheet access (Workspace blocks unverified OAuth). HTTPS
- * webhook calls have no such restriction. Apps Script holds the Sheet auth.
+ * authorize direct Sheet/Drive access (Workspace blocks unverified OAuth).
+ * Plain HTTPS calls to a public API route have no such restriction.
  *
  * ---------------------------------------------------------------------------
  * Two modes:
- *   collect  → fetch + POST to ingest webhook
- *   execute  → reads approved actions from Apps Script, applies mutations
- *              (Phase 12 — stub for now)
+ *   collect  → fetch + POST to /api/ingest
+ *   execute  → polls /api/pending-changes, applies mutations via AdsApp,
+ *              reports back to /api/execute-result
  *
  * ---------------------------------------------------------------------------
  * Setup (one-time):
- *   Phase 2:
- *     1. Deploy apps_script/ingest.js as a Web App (see SETUP.md Phase 2)
- *     2. Copy the Web App URL into APPS_SCRIPT_WEBHOOK_URL below
- *     3. Pick any secret string, paste into INGEST_SECRET below AND into
- *        Apps Script Script Properties as INGEST_SECRET
- *     4. Save → Authorize → Preview → Run
+ *   1. Set APPS_SCRIPT_WEBHOOK_URL to <your Vercel deployment>/api/ingest
+ *   2. Set INGEST_SECRET to match the INGEST_SECRET env var on Vercel
+ *   3. Save → Authorize → Preview → Run
  *
  *   Permissions granted on first run: external URL fetch only (no Sheets,
- *   no Drive — bypasses Workspace OAuth restrictions).
+ *   no Drive).
  * ---------------------------------------------------------------------------
  */
 
 const CONFIG = {
-  // PASTE YOUR VALUES HERE.
-  APPS_SCRIPT_WEBHOOK_URL: 'PASTE_YOUR_WEB_APP_URL_HERE',
-  INGEST_SECRET:           'PASTE_YOUR_SHARED_SECRET_HERE',
+  APPS_SCRIPT_WEBHOOK_URL: 'https://web-seven-rho-96.vercel.app/api/ingest',
+  INGEST_SECRET:           '873f1fe208b9a445b34ecad0aaf0650931b7da98cc9d91e6',
 
   MODE:         'collect',  // 'collect' | 'execute'
   COLLECT_MODE: 'daily',    // 'daily' (LAST_30_DAYS) | 'weekly' (LAST_90_DAYS)
@@ -67,15 +63,12 @@ function main() {
 
   if (!CONFIG.APPS_SCRIPT_WEBHOOK_URL || CONFIG.APPS_SCRIPT_WEBHOOK_URL.indexOf('PASTE') === 0) {
     throw new Error(
-      'APPS_SCRIPT_WEBHOOK_URL is not set. Deploy apps_script/ingest.js as a ' +
-      'Web App (see SETUP.md Phase 2) and paste the URL into the CONFIG block.'
+      'APPS_SCRIPT_WEBHOOK_URL is not set. Point it at <your Vercel deployment>/api/ingest.'
     );
   }
   if (!CONFIG.INGEST_SECRET || CONFIG.INGEST_SECRET.indexOf('PASTE') === 0) {
     throw new Error(
-      'INGEST_SECRET is not set. Pick any random string, paste it into the ' +
-      'CONFIG block above AND into Apps Script → Project Settings → Script ' +
-      'Properties as the value of INGEST_SECRET.'
+      'INGEST_SECRET is not set. It must match the INGEST_SECRET env var configured on Vercel.'
     );
   }
 
@@ -565,42 +558,121 @@ function fetchNegativeKeywords_(runDate) {
 /* ===========================================================================
  * EXECUTE MODE — Phase 12 placeholder.
  * ========================================================================= */
+/* ===========================================================================
+ * EXECUTE MODE (Phase H) — pull the approved-change queue from
+ * /api/pending-changes, apply each via AdsApp, and report results back to
+ * /api/execute-result for the change_log.
+ *
+ * Safety: the API only queues a change (status='queued') when its config
+ * DRY_RUN=false (and only after the dashboard Approvals gate). So anything we
+ * pull here is human-approved and rail-validated. We still wrap every change
+ * in its own try/catch so one failure never blocks the rest.
+ * ========================================================================= */
 function runExecute_() {
-  log_('Execute mode is not yet implemented — comes in Phase 12.');
-  log_('When ready, this will:');
-  log_('  1. Fetch approved actions from Apps Script via webhook');
-  log_('  2. For each approved item, call the right mutate (bid, pause, etc.)');
-  log_('  3. Respect safety rails from Config tab');
-  log_('  4. Report each change back via webhook for the Change_Log tab');
+  log_('Execute mode — polling /api/pending-changes…');
+
+  const url = _apiUrl_('pending-changes') + '?secret=' + encodeURIComponent(CONFIG.INGEST_SECRET);
+  const resp = UrlFetchApp.fetch(url, { method: 'get', followRedirects: true, muteHttpExceptions: true });
+  let parsed;
+  try { parsed = JSON.parse(resp.getContentText()); }
+  catch (e) { throw new Error('Bad queue response: ' + resp.getContentText().slice(0, 300)); }
+  if (!parsed.ok) throw new Error('Queue error: ' + (parsed.error || 'unknown'));
+
+  const changes = parsed.changes || [];
+  log_(`Pulled ${changes.length} queued change(s).`);
+  if (changes.length === 0) { log_('Nothing to execute.'); return; }
+
+  const results = [];
+  for (const ch of changes) {
+    try {
+      applyChange_(ch);
+      results.push({ change_id: ch.change_id, success: true });
+      log_(`  [OK]   ${ch.change_type} ${ch.target_type} ${ch.target_id} (${ch.before_value} → ${ch.after_value})`);
+    } catch (e) {
+      results.push({ change_id: ch.change_id, success: false, error: String(e.message || e).slice(0, 300) });
+      log_(`  [FAIL] ${ch.change_type} ${ch.target_id}: ${e.message || e}`);
+    }
+  }
+
+  // Report results back so the API updates pending_changes + change_log.
+  const post = UrlFetchApp.fetch(_apiUrl_('execute-result'), {
+    method: 'post', contentType: 'application/json', followRedirects: true, muteHttpExceptions: true,
+    payload: JSON.stringify({
+      secret: CONFIG.INGEST_SECRET, run_date: todayString_(), results: results,
+    }),
+  });
+  log_(`Reported ${results.length} result(s): ${post.getContentText().slice(0, 200)}`);
+}
+
+/** Build a sibling API URL from APPS_SCRIPT_WEBHOOK_URL (…/api/ingest -> …/api/<name>). */
+function _apiUrl_(name) {
+  return CONFIG.APPS_SCRIPT_WEBHOOK_URL.replace(/\/api\/[^/?]+\/?$/, '/api/' + name);
+}
+
+function applyChange_(ch) {
+  if (ch.change_type === 'add_negative') {
+    const term = ch.params && ch.params.term;
+    if (!term) throw new Error('missing term');
+    const text = '"' + String(term).trim() + '"';   // phrase match
+    if (ch.target_type === 'adgroup') {
+      const ag = adGroupById_(ch.target_id);
+      if (!ag) throw new Error('ad group ' + ch.target_id + ' not found');
+      ag.createNegativeKeyword(text);
+    } else {
+      const c = campaignById_(ch.target_id);
+      if (!c) throw new Error('campaign ' + ch.target_id + ' not found');
+      c.createNegativeKeyword(text);
+    }
+    return;
+  }
+  if (ch.change_type === 'adjust_budget') {
+    const c = campaignById_(ch.target_id);
+    if (!c) throw new Error('campaign ' + ch.target_id + ' not found');
+    const amount = parseFloat(ch.after_value);
+    if (!(amount > 0)) throw new Error('bad budget amount ' + ch.after_value);
+    c.getBudget().setAmount(amount);   // account-currency units
+    return;
+  }
+  throw new Error('unsupported change_type ' + ch.change_type);
+}
+
+function campaignById_(id) {
+  const it = AdsApp.campaigns().withIds([String(id)]).get();
+  return it.hasNext() ? it.next() : null;
+}
+function adGroupById_(id) {
+  const it = AdsApp.adGroups().withIds([String(id)]).get();
+  return it.hasNext() ? it.next() : null;
 }
 
 /* ===========================================================================
- * APPS SCRIPT WEBHOOK
+ * INGEST API CALL
  * ========================================================================= */
 function postToAppsScript_(payload) {
   const resp = UrlFetchApp.fetch(CONFIG.APPS_SCRIPT_WEBHOOK_URL, {
     method:             'post',
     contentType:        'application/json',
+    headers:            { Authorization: 'Bearer ' + CONFIG.INGEST_SECRET },
     payload:            JSON.stringify(payload),
-    followRedirects:    true,    // Apps Script Web Apps redirect to script.googleusercontent.com
+    followRedirects:    true,
     muteHttpExceptions: true,
   });
   const code = resp.getResponseCode();
   const body = resp.getContentText();
   if (code < 200 || code >= 300) {
-    throw new Error(`Apps Script returned HTTP ${code}: ${body.slice(0, 400)}`);
+    throw new Error(`Ingest API returned HTTP ${code}: ${body.slice(0, 400)}`);
   }
   try {
     const parsed = JSON.parse(body);
     if (parsed.ok === false) {
-      throw new Error(`Apps Script ingest failed: ${parsed.error || body.slice(0, 400)}`);
+      throw new Error(`Ingest failed: ${parsed.error || body.slice(0, 400)}`);
     }
     const summary = parsed.written
       ? Object.keys(parsed.written).map(k => `${k}=${parsed.written[k]}`).join(', ')
       : '(no row-count returned)';
     return `HTTP 200 — ${summary}`;
   } catch (e) {
-    // Non-JSON response — likely an HTML error page from Apps Script.
+    // Non-JSON response — likely an HTML error page.
     return `HTTP ${code} but non-JSON body: ${body.slice(0, 200)}`;
   }
 }

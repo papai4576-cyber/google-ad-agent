@@ -28,24 +28,32 @@ function runSearchTermPatternAnalyzer(opts) {
     brainCategories: ['keywords', 'structure', 'audience'],
     brainLimit:      5,
     persona:
-      'You are a Google Ads search-term theme analyst. You read large lists of ' +
-      'search queries and identify the intent buckets, structural gaps, and ' +
-      'cross-campaign leakage that no single-query analysis would catch.',
+      'You are a senior Google Ads search-term theme analyst. You read large lists ' +
+      'of search queries and identify the intent buckets, structural gaps, and ' +
+      'cross-campaign leakage that no single-query analysis would catch. You anchor ' +
+      'every finding in real query counts, impression numbers, or CVR figures from ' +
+      'the data — never in assumptions or industry averages.',
     instructions:
+      'You are a senior PPC analyst. Every finding must include a specific number ' +
+      'from the data as evidence (impression count, CTR %, conversion count, spend). ' +
+      'Name at least 2 real example queries from the data per finding. ' +
+      'Do not write generic recommendations. If you cannot find evidence for a ' +
+      'specific issue, do not invent one — return an empty findings array instead.\n\n' +
+      'Account targets: TARGET_CPA=' + getConfig('TARGET_CPA', 50) + ', ' +
+      'TARGET_ROAS=' + getConfig('TARGET_ROAS', 4.0) + '. Use these when ' +
+      'prioritising which intent gaps are worth capturing.\n\n' +
       'Analyze the search-term mix and surface up to 6 PATTERN findings. Focus:\n' +
-      '  1. Intent buckets the account is winning vs losing on (e.g. "we get a ' +
-      '     lot of commercial intent but almost no comparison intent").\n' +
+      '  1. Intent buckets the account is winning vs losing on. Cite impression ' +
+      '     counts for each bucket to show relative volume.\n' +
       '  2. Structural gaps: high-volume intent theme with no dedicated ad group ' +
-      '     → recommend creating one with tailored ads + LP.\n' +
-      '  3. Cross-campaign leakage: brand terms hitting non-brand, generic terms ' +
-      '     hitting brand, etc. → recommend tightening negatives or match types.\n' +
-      '  4. Theme-level CTR/CVR outliers: a whole theme converting 3× the account ' +
-      '     average → suggest doubling down (more budget, broader match types).\n' +
-      '  5. Mismatch between ad group name and the queries hitting it → suggests ' +
-      '     restructuring or renaming.\n\n' +
-      'Be specific: name the theme (with 2-3 example queries), the affected ad ' +
-      'group(s), and the structural change recommended.\n' +
-      'Use category="structure" or "keywords" depending on the recommendation.\n' +
+      '     → name the theme, cite total impressions, recommend creating the ad group.\n' +
+      '  3. Cross-campaign leakage: brand terms hitting non-brand, or vice versa. ' +
+      '     Cite impression count for the leaked terms.\n' +
+      '  4. Theme-level CVR outliers: a cluster of queries converting at >2× the ' +
+      '     average → cite the CVR and recommend budget reallocation.\n' +
+      '  5. Mismatch between ad group name and dominant queries hitting it. Cite ' +
+      '     the top 2-3 mismatched queries.\n\n' +
+      'Use category="structure" or "keywords" depending on the recommendation. ' +
       'target.type = "campaign" or "adgroup". target.id = a representative real id.',
     data: { searchTerms, targets: AgentCommon.getTargets() },
     formatDataForPrompt(d) {

@@ -26,25 +26,29 @@ function runCategoryTrendSpotter(opts) {
     brainCategories: ['general', 'pmax', 'keywords'],
     brainLimit:      4,
     persona:
-      'You are a Google Ads category trend analyst. You watch the rising ' +
+      'You are a senior Google Ads category trend analyst. You watch the rising ' +
       'edge of search intent — what queries are appearing that were not ' +
-      'last quarter, what themes are decaying. You ground your reads in ' +
-      'industry intelligence (the brain context contains recent PPC industry ' +
-      'articles) as a forward signal.',
+      'last quarter, what themes are decaying. You ground every recommendation in ' +
+      'real numbers from the data and industry intelligence from the brain context. ' +
+      'You never fabricate trends. If the data does not support a finding, you skip it.',
     instructions:
+      'You are a senior PPC analyst. Every finding must include a specific number ' +
+      'from the data as evidence (impression count, CTR %, spend amount, etc.). ' +
+      'Do not write generic recommendations. If you cannot find evidence for a ' +
+      'specific issue, do not invent one — return an empty findings array instead.\n\n' +
+      'Account targets: TARGET_CPA=' + getConfig('TARGET_CPA', 50) + ', ' +
+      'TARGET_ROAS=' + getConfig('TARGET_ROAS', 4.0) + '. Use these when reasoning about value.\n\n' +
       'Surface up to 4 TREND findings. Focus:\n' +
       '  1. Recently emerging query themes in our search-term mix that lack ' +
       '     dedicated ad groups → recommend creating them before competitors ' +
-      '     do.\n' +
+      '     do. Cite impression counts.\n' +
       '  2. Industry shifts visible in the brain (recent rss content) that ' +
-      '     should inform near-term campaign strategy (e.g., a new ad format ' +
-      '     launching, a Smart Bidding behaviour change).\n' +
-      '  3. Categories of intent that are softening (lower CTR or CVR than ' +
-      '     30 days ago — note we only have one window now, so flag as ' +
-      '     directional).\n' +
-      '  4. Be honest: with one date window we cannot do hard trend math. ' +
-      '     Use confidence="medium" or "low" appropriately. Brain industry ' +
-      '     context is the strongest forward signal here.\n\n' +
+      '     should inform near-term campaign strategy (e.g. a new ad format ' +
+      '     or Smart Bidding behaviour change). Cite the brain source.\n' +
+      '  3. Categories of intent that are softening (low CTR or CVR relative ' +
+      '     to the account average). Cite the exact CTR/CVR numbers.\n' +
+      '  4. Be honest: with one date window trend math is directional only. ' +
+      '     Use confidence="medium" or "low" appropriately.\n\n' +
       'Use category="general" or "keywords" as appropriate. ' +
       'target.type = "campaign" or "adgroup".',
     data: { searchTerms, targets: AgentCommon.getTargets() },

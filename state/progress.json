@@ -1,67 +1,139 @@
 {
-  "last_completed_phase": 10,
-  "current_phase": 11,
-  "current_phase_name": "Slack approval gate (NOT started). Detour likely first: full-scope improvement plan (Dashboard rebuild + correctness/token/trend fixes).",
-  "current_phase_status": "Phases 1-10 complete and Phase 10 VERIFIED green on 2026-06-06. All 14 read/analysis agents + 3 managers + synthesis layer run end-to-end. Decision pending: continue to Phase 11 (Slack gate) OR run the improvement plan to fix the two quality issues exposed during verification (same-day double-writes, over-aggressive dedup) plus the dead Dashboard.",
-  "architecture": "Google Ads Script (collect) -> Apps Script Web App (ingest) | MULTI-LLM: Groq Llama 3.3 70B (8 reasoning agents) + Gemini 2.5 Flash (6 rule/data agents, thinking disabled) with automatic failover | Brain: Drive + ContentHunter RSS | 14 of 14 read/analysis agents live | Synthesis layer + live Dashboard built | Slack gate + Implementation fleet + Scheduling NOT built",
-  "verified_full_run_2026-06-06": "testCampaignDirector: 14/14 agents ran, 0 failures, 76 findings -> 74 plan items (P1=19 P2=40 P3=15), 71646 total tokens (Groq ~45.2K, Gemini ~26.4K on separate quota = ~37% Groq offload), 270s. Batch-1 fixes CONFIRMED: double-write gone (76 findings not ~119), dedup healthy (76->74, only 2 merges vs old 119->73). NEW RISK: 270s runtime near Apps Script 6-min hard cap, driven by Groq 429 TPM sleeps (30s each) + Gemini 503 overload retries.",
-  "phases_built": {
-    "1_foundation": "done",
-    "2_ads_collector": "done",
-    "3_appsscript_webapp_groq": "done",
-    "4_brain_layer": "done",
-    "5_content_hunter_rss": "done (RedditHunter inactive, RSS used instead)",
-    "6_audit_batch_1": "done (Performance, Bid/Budget, QS, Conversion)",
-    "7_audit_batch_2": "done (AdCopyCritic, KeywordMiner, NegativeKwHunter, SearchTermPatternAnalyzer)",
-    "8_audit_batch_3": "done (Audience, Structure, Extensions, Competitive, CategoryTrend, LandingPage)",
-    "9_managers": "done (AuditManager + CopyIntelManager + CampaignDirector)",
-    "10_synthesis": "VERIFIED green 2026-06-06 (testSynthesisOnDate 2026-06-03: 119 findings -> 73 deduped -> 73 Action_Plan rows in 1.1s). Two quality issues exposed: (a) same-day double-writes inflated input to 119 [duplicate finding_ids in merge log], (b) dedup key (target_type,target_id,category) over-collapses distinct performance issues on same campaign into one plan row.",
-    "11_slack_gate": "NOT built",
-    "12_implementation_fleet": "NOT built (google_ads_script execute mode stub only; no Apps Script ImplementationManager; safety rails documented but enforced nowhere in code yet)",
-    "13_dashboard": "NOT built (Dashboard tab exists with headers but NO code writes to it - dead tab)",
-    "14_scheduling_e2e": "NOT built"
+  "track": "v2",
+  "v1_status": {
+    "summary": "v1 (Apps Script + Sheets) is feature-complete through Phase 12 (Slack gate, action_category/action_type classification, hidden internal tabs). Lives entirely under apps_script/ and remains functional during the v2 migration.",
+    "last_completed_phase": 12,
+    "kept_until": "Phase J of v2 (parallel-run validation + cutover)"
   },
-  "known_flaws_pending_fix": [
-    "Dashboard tab is never populated by any code (Phase 13 not built)",
-    "Findings tab double-writes on same-day reruns and grows unbounded (appendFindings only appends, never clears per run_date)",
-    "Token cost: ~14x universal-schema boilerplate resend per run, no global token ceiling, no rules engine, no secondary LLM",
-    "Analytical depth: Raw_* tabs fully overwritten each collect, so agents cannot see week-over-week trends",
-    "DEFAULTS constant in config.js is stale/inconsistent with seedConfigTab_ and getTargets() defaults"
-  ],
-  "phase_artifacts": [
-    "apps_script/config.js",
-    "apps_script/setup.js",
-    "apps_script/ingest.js",
-    "apps_script/llm.js",
-    "apps_script/brain/BrainStore.js",
-    "apps_script/brain/BrainCurator.js",
-    "apps_script/brain/ContentHunter.js",
-    "apps_script/brain/RedditHunter.js (inactive)",
-    "apps_script/agents/_common.js",
-    "apps_script/agents/audit/PerformanceAnalyst.js",
-    "apps_script/agents/audit/BidBudgetAnalyst.js",
-    "apps_script/agents/audit/QualityScoreInspector.js",
-    "apps_script/agents/audit/ConversionHealthChecker.js",
-    "apps_script/agents/audit/AudienceAnalyst.js",
-    "apps_script/agents/audit/AccountStructureReviewer.js",
-    "apps_script/agents/audit/ExtensionAuditor.js",
-    "apps_script/agents/copy_intel/AdCopyCritic.js",
-    "apps_script/agents/copy_intel/KeywordMiner.js",
-    "apps_script/agents/copy_intel/NegativeKwHunter.js",
-    "apps_script/agents/copy_intel/SearchTermPatternAnalyzer.js",
-    "apps_script/agents/copy_intel/CompetitiveIntel.js",
-    "apps_script/agents/copy_intel/CategoryTrendSpotter.js",
-    "apps_script/agents/copy_intel/LandingPageScorer.js",
-    "apps_script/agents/synthesis/DeduplicationAgent.js",
-    "apps_script/agents/synthesis/ImpactScorer.js",
-    "apps_script/agents/synthesis/PlanFormatter.js",
-    "apps_script/managers/AuditManager.js",
-    "apps_script/managers/CopyIntelManager.js",
-    "apps_script/managers/SynthesisManager.js",
-    "apps_script/managers/CampaignDirector.js",
-    "google_ads_script.js",
-    "SETUP.md"
-  ],
-  "next_user_action": "Verify Phase 10: run testSynthesisOnDate (or testCampaignDirector) and confirm Action_Plan populates. Then decide: continue to Phase 11 (Slack gate) OR run the full-scope improvement plan (Dashboard rebuild + correctness/token/trend fixes).",
-  "updated_at": "2026-06-04"
+  "v2_status": {
+    "plan_file": "C:\\Users\\papai\\.claude\\plans\\what-i-m-seeing-right-calm-flute.md",
+    "current_phase": "J",
+    "current_phase_name": "Parallel-run validation vs v1 → cutover → decommission apps_script/",
+    "deployment": {
+      "vercel_project": "preetam-das-projects-23b82702/web",
+      "production_url": "https://web-seven-rho-96.vercel.app",
+      "supabase_project_ref": "tqdvbbfhgcqzwhpgwhdw",
+      "supabase_pooler_region": "aws-1-ap-northeast-2",
+      "note": "Use the Supabase connection POOLER (port 6543, host aws-1-ap-northeast-2.pooler.supabase.com, user postgres.tqdvbbfhgcqzwhpgwhdw) for DATABASE_URL — the direct db.<ref>.supabase.co:5432 host is IPv6-only and unreachable from Vercel."
+    },
+    "phases": {
+      "A": { "name": "Repo scaffold: Next.js app + Drizzle schema + Supabase project + Vercel deploy", "status": "done" },
+      "B": { "name": "/api/ingest route + repoint google_ads_script.js POST URL/secret", "status": "done" },
+      "C": { "name": "Port shared infra to TS: rules engine, findings schema, Groq client, dedup, impact scorer, action-meta classifier", "status": "done" },
+      "D": { "name": "Build Performance & Budget Analyst + Quality & Structure Analyst", "status": "done" },
+      "E": { "name": "Build Audience & Copy Analyst + Search Intelligence Analyst + Market Intelligence Analyst + Landing Page Scorer", "status": "done" },
+      "F": { "name": "Synthesis pipeline + daily-audit GitHub Actions workflow, end-to-end with real data", "status": "done" },
+      "G": { "name": "Dashboard: Overview (budget bug fixed) + Action Plan page with approve/reject", "status": "done" },
+      "H": { "name": "/api/pending-changes + /api/execute-result + repoint execute mode + hourly-implementation workflow", "status": "done" },
+      "I": { "name": "Slack digest notification + /history, /brain, /config pages", "status": "done" },
+      "J": { "name": "Parallel-run validation vs v1 → cutover → decommission apps_script/", "status": "in_progress" }
+    },
+    "phase_a_progress": [
+      "Created web/ Next.js 16 app (TypeScript, Tailwind, App Router, src dir, eslint).",
+      "Installed drizzle-orm, postgres, drizzle-kit.",
+      "Wrote web/src/db/schema.ts — full Postgres schema (raw snapshot tables + agent layer tables) per plan.",
+      "Wrote web/src/db/index.ts (lazy db client, null-safe if DATABASE_URL unset) and web/drizzle.config.ts.",
+      "Added db:generate/db:push/db:studio scripts to web/package.json and web/.env.example.",
+      "Replaced web/src/app/page.tsx with Overview scaffold + DB connection check.",
+      "npm run build passes."
+    ],
+    "phase_a_remaining": [],
+    "phase_b_progress": [
+      "Wrote web/src/app/api/ingest/route.ts — Bearer-auth POST route mapping each Raw_* array to its raw snapshot table (chunked inserts, campaigns_daily upserted by campaignId+date, ads jsonb fields parsed from *_json strings, negative_keywords id generated as run_date_index).",
+      "Repointed google_ads_script.js: APPS_SCRIPT_WEBHOOK_URL -> https://web-seven-rho-96.vercel.app/api/ingest, INGEST_SECRET set, postToAppsScript_ now sends Authorization: Bearer header.",
+      "Verified end-to-end locally with a sample collect payload (all 8 Raw_* tables written, jsonb/null mappings correct), then cleaned up test rows.",
+      "Deployed to Vercel production; verified /api/ingest accepts valid Bearer token (200) and rejects invalid (401).",
+      "Ran graphify update . to refresh the knowledge graph with the new web/ Next.js code (802 nodes, 1097 edges, 78 communities)."
+    ],
+    "phase_b_remaining": [],
+    "phase_c_progress": [
+      "Created web/src/agents/ with schema.ts (VALID enums + Finding/AnalystOutput types + validateFindings/normalizeFinding, ported from apps_script/config.js + agents/_common.js).",
+      "Ported Groq client to web/src/agents/llm.ts (callLLM, fetch+retry/backoff, GROQ_API_KEY from process.env, token usage tracked in the token_usage table, daily ceiling read from config.GROQ_DAILY_TOKEN_CEILING).",
+      "Ported RulesEngine to web/src/agents/rules/rulesEngine.ts (RulesEngine.load(defaults) reads RULE_* rows from config table in one query) plus getConfigValue/getTargets/isDryRun.",
+      "Ported DeduplicationAgent to web/src/agents/synthesis/dedup.ts (entity-bucket + Jaccard title-signature clustering, >=0.5 threshold), operating on the nested v2 Finding shape.",
+      "Ported ImpactScorer to web/src/agents/synthesis/impactScorer.ts (SCORE_WEIGHTS, PRIORITY_THRESHOLDS, score/priority assignment), reading nested estimated_impact.magnitude.",
+      "Defined v2 agent-name + finding-id-prefix conventions in web/src/agents/synthesis/agentNames.ts for the 6 consolidated Analysts (replacing v1's 14-agent names).",
+      "Ported _deriveActionMeta_ to web/src/agents/synthesis/actionMeta.ts, remapped to the new agent names/prefixes.",
+      "Ported the 3 SynthesisManager cross-agent patterns to web/src/agents/synthesis/crossAgentPatterns.ts, remapped to the new agent names/prefixes.",
+      "Added web/src/agents/brain.ts (queryBrain/formatBrainContext, ported from BrainStore.query).",
+      "Ported the AnalystSpec harness to web/src/agents/runAnalyst.ts: runPureLLMAnalyst + runRuleBasedAnalyst + buildSystemPrompt/buildRuleSystemPrompt/formatDataContext (LAST_COLLECT_* read from config table). Returns AnalystOutput per CLAUDE.md's universal schema; does not write to the DB (Phase F's job).",
+      "npm run build and npm run lint both pass clean."
+    ],
+    "phase_c_remaining": [],
+    "phase_d_notes": [
+      "Phase D Analysts should set finding.agent to AGENTS.PERFORMANCE_BUDGET / AGENTS.QUALITY_STRUCTURE (web/src/agents/synthesis/agentNames.ts) and prefix finding.id per the conventions documented there, so actionMeta.ts and crossAgentPatterns.ts (Phase F) classify them correctly.",
+      "Phase F still needs: synthesisManager.ts wiring dedup -> crossAgentPatterns -> ImpactScorer -> actionMeta -> action_plan rows (PlanFormatter's plan_id/run-date-clear logic was read but not yet ported, since it's Phase F's job)."
+    ],
+    "phase_d_progress": [
+      "Added web/src/agents/data.ts: loadAccountData() (reads campaigns/ad_groups/keywords/ads/extensions snapshot tables in parallel) + micros() helper, ported from AgentCommon.readCampaigns/readAdGroups/readKeywords/readAds/readExtensions + AgentCommon.micros.",
+      "Added web/src/agents/analysts/performanceBudgetAnalyst.ts: buildPerformanceBudgetAnalystSpec() + detectPerformanceBudget(), merging v1's PerformanceAnalyst + BidBudgetAnalyst + ConversionHealthChecker into one rule-based RuleBasedAnalystSpec for AGENTS.PERFORMANCE_BUDGET. 16 detect rules ported 1:1 (cpa-over- -> cpa-overage-, roas-low- -> roas-shortfall- to match agentNames.ts conventions; budget-locked-/rank-locked-/idle-budget- kept as-is).",
+      "Added web/src/agents/analysts/qualityStructureAnalyst.ts: buildQualityStructureAnalystSpec() + detectQualityStructure(), merging v1's QualityScoreInspector + AccountStructureReviewer + ExtensionAuditor into one rule-based RuleBasedAnalystSpec for AGENTS.QUALITY_STRUCTURE. Structural and extension finding ids reprefixed to structure-* / extension-* per agentNames.ts conventions; low-qs-/no-qs-spend- kept as-is.",
+      "Both specs combine all source agents' RULE_* defaults into one RulesEngine.load() call (one config query each) and include a no-op formatDataForPrompt (required by AnalystSpec but unused by the rule-based path).",
+      "npm run build and npm run lint both pass clean.",
+      "Ran graphify update . (AST-only, no LLM cost): incremental detect found 4 changed files (progress.json, data.ts, performanceBudgetAnalyst.ts, qualityStructureAnalyst.ts) plus 1 deleted (.clasp.json); merged + re-clustered to 910 nodes / 1305 edges / 76 communities."
+    ],
+    "phase_d_remaining": [],
+    "phase_e_notes": [
+      "Phase E builds the 4 remaining Analysts (Audience & Copy, Search Intelligence, Market Intelligence, Landing Page Scorer) following the same pattern: a buildXSpec() factory in web/src/agents/analysts/ that loads data via data.ts (extend it with searchTerms/negativeKeywords readers as needed) and returns a RuleBasedAnalystSpec or AnalystSpec, with agent/id-prefix conventions from agentNames.ts.",
+      "Search Intelligence and Market Intelligence are 'pure LLM' analysts per CLAUDE.md (runPureLLMAnalyst, not rule-based) — they need formatDataForPrompt to actually render data, unlike Phase D's rule-based specs."
+    ],
+    "phase_e_progress": [
+      "Extended web/src/agents/data.ts with readSearchTerms() and readNegativeKeywords() (search_terms/negative_keywords snapshot tables) plus SearchTermRow/NegativeKeywordRow types.",
+      "Added web/src/agents/analysts/audienceCopyAnalyst.ts: buildAudienceCopyAnalystSpec() + detectAudienceCopy(), merging v1's AudienceAnalyst + AdCopyCritic into one rule-based RuleBasedAnalystSpec for AGENTS.AUDIENCE_COPY. 9 detect rules ported 1:1 (AudienceAnalyst rules reprefixed audience-*, AdCopyCritic rules reprefixed copy-* except low-ctr-ad-* kept as-is per agentNames.ts). BRAND_KEYWORDS read via getConfigValue and combined with RULE_* defaults from both source agents.",
+      "Added web/src/agents/analysts/searchIntelligenceAnalyst.ts: buildSearchIntelligenceAnalystSpec(), a pure-LLM AnalystSpec for AGENTS.SEARCH_INTELLIGENCE merging KeywordMiner + NegativeKwHunter + SearchTermPatternAnalyzer into one 3-section prompt (add-negative-/new-keyword-/search-term-pattern- id prefixes). Ported _buildNegativeMatcher_/_negativeMatches_/_reEscape_ as local helpers operating on camelCase NegativeKeywordRow fields.",
+      "Added web/src/agents/analysts/marketIntelligenceAnalyst.ts: buildMarketIntelligenceAnalystSpec(), a pure-LLM AnalystSpec for AGENTS.MARKET_INTELLIGENCE merging CompetitiveIntel + CategoryTrendSpotter (brand-defense IS table, comparison-query table, top-50-impressions trend table). actionMeta.ts already routes this agent to action_category='insight' regardless of id.",
+      "Added web/src/agents/analysts/landingPageScorer.ts: buildLandingPageScorerSpec(), a pure-LLM AnalystSpec for AGENTS.LANDING_PAGE. Ported _scorePage from UrlFetchApp to Node's global fetch (redirect detection via redirect:'manual' probe + redirect:'follow' main fetch), same LP_MAX_PAGES/LP_SLOW_RESPONSE_MS/LP_HEAVY_BYTES/CTA-verb/soft-404 checks as v1.",
+      "npm run build and npm run lint both pass clean.",
+      "Ran graphify update . (AST-only, no LLM cost): incremental detect found 6 changed files (progress.json, data.ts, and the 4 new analyst files) plus 1 deleted (.clasp.json). build_merge's dedup pass found 236 duplicate nodes accumulated from prior incremental runs (187 exact, 49 fuzzy) and collapsed them, taking the graph from 912 to 722 nodes / 1282 edges / 44 communities. Verified all 27 nodes from the 4 new Phase E analyst files are present post-merge. NOTE: graphify's CLI `cluster-only` does NOT reload merged in-memory chunks from build_merge (it re-reads graph.json from disk and build_merge doesn't persist) — had to call to_json(..., force=True) directly after build_merge+cluster to actually save the merge."
+    ],
+    "phase_f_progress": [
+      "Added web/src/agents/synthesis/planFormatter.ts: formatActionPlan(scored, runDate) -> ActionPlanRow[], pure function ported from PlanFormatter.js's run() ordering (P1 first, then score desc) + plan_id format plan_YYYYMMDD_NNN, using actionMeta.ts's deriveActionMeta (Phase C).",
+      "Added web/src/agents/synthesis/synthesisManager.ts: runSynthesis(findings, runDate) orchestrating dedup (dedup.ts) -> cross-agent patterns (crossAgentPatterns.ts) -> impact scoring (impactScorer.ts) -> formatActionPlan -> idempotent action_plan rewrite for runDate (clear+insert), ported from SynthesisManager.js's runSynthesisManager. written count now reflects actual DB inserts, not just planRows.length.",
+      "Added web/src/agents/runDailyAudit.ts (npm run daily-audit): runs all 6 Analysts (isolated per-agent try/catch), persists raw findings (replace-by-run_date), calls runSynthesis, stamps config.LAST_AUDIT_DATE/LAST_AUDIT_SUMMARY.",
+      "BUG FOUND AND FIXED: @/db (web/src/db/index.ts) reads process.env.DATABASE_URL at module-eval time, but ESM resolves a module's full import graph (including @/db) BEFORE the importing script's own top-level statements run -- so dotenv calls placed inside runDailyAudit.ts itself were always too late, leaving db=null silently (writes were skipped but logs still claimed success because `written: planRows.length` didn't check db). Fixed by adding web/scripts/load-env.cjs (loads .env then .env.local via CJS require, executed via `tsx --require` BEFORE the ESM graph loads) and changing package.json's daily-audit script to `tsx --require ./scripts/load-env.cjs src/agents/runDailyAudit.ts`. Also fixed synthesisManager.ts's `written` to only count rows actually inserted.",
+      "BUG FOUND AND FIXED: web/src/agents/analysts/landingPageScorer.ts and web/src/agents/llm.ts used `fetch()` with no timeout, which can hang indefinitely (observed: first end-to-end run hung >25min with near-zero CPU, had to be killed). Added AbortSignal.timeout() — 15s per landing-page fetch (LP_FETCH_TIMEOUT_MS), 60s per Groq call (LLM.request_timeout_ms).",
+      "Created .github/workflows/daily-audit.yml: cron 06:00 UTC + workflow_dispatch, runs `npm run ci && npm run daily-audit` in web/ on ubuntu-latest/node 22, with DATABASE_URL and GROQ_API_KEY from repo secrets.",
+      "Verified end-to-end against the real Supabase DB and Groq API (npm run daily-audit): 6 analysts ran (3 rule-based with 1 LLM call each, 3 pure-LLM), 1 raw finding (performance_budget_analyst/pacing-account, P1), dedup 1->1 (0 merged), 0 cross-agent patterns, scored P1=1, action_plan got 1 row (plan_20260612_001, action_category=manual, action_type=change_bid_strategy, score=2), config.LAST_AUDIT_DATE/LAST_AUDIT_SUMMARY stamped. Confirmed via direct DB query post-run.",
+      "npm run build, npm run lint, npx tsc --noEmit all pass clean."
+    ],
+    "phase_g_progress": [
+      "Added web/src/lib/dates.ts: todayUTC/daysAgoUTC/firstOfMonthUTC/dayOfMonthUTC/relativeTimeFromNow shared by dashboard pages.",
+      "Added web/src/app/components/Nav.tsx and wired it into web/src/app/layout.tsx (links: Overview, Action Plan; updated metadata title/description).",
+      "Rewrote web/src/app/page.tsx as the Overview dashboard: total daily budget = SUM(budget_micros) WHERE status='ENABLED' from campaigns, shown with 'as of <relative time of campaigns.updated_at MAX>' to fix the v1 staleness bug; MTD pacing card compares campaigns_daily-derived MTD spend vs (daily budget * day-of-month), flags out-of-tolerance using RULE_PACING_TOLERANCE from config; 7d/30d/MTD KPI rows (spend, conversions, ROAS, CPA) from campaigns_daily; latest-audit card (config.LAST_AUDIT_DATE/SUMMARY + action_plan P1/P2/P3/pending counts); Groq token usage today vs config.GROQ_DAILY_TOKEN_CEILING. Page marked `export const dynamic = 'force-dynamic'` so it isn't baked as a static page at build time.",
+      "Added web/src/app/action-plan/page.tsx: tabs for auto/manual/insight (action_category, via ?tab= searchParam, Next 16 async searchParams Promise), each tab shows action_plan rows sorted by score desc with priority/status/action_type/score badges, expandable <details> for what/why/action, target, plan_id/run_date. Pending rows get ApproveButtons.",
+      "Added web/src/app/action-plan/ApproveButtons.tsx (client component): Approve/Reject buttons POST to /api/approve, then router.refresh().",
+      "Added web/src/app/api/approve/route.ts: POST {planId, action: 'approve'|'reject'} -> updates action_plan.status + inserts an approvals row (id appr_<planId>_<ts>).",
+      "Verified end-to-end with `npm run dev`: Overview renders correctly with empty campaigns/campaigns_daily (shows Rs0/day, 'unknown' staleness, all KPI rows '-'/0 -- raw snapshot tables are currently empty since Phase B's test rows were cleaned up and no real collect run has happened yet); Action Plan page correctly shows the 1 real row from Phase F (plan_20260612_001, manual tab, P1, score 2.00) with working Approve/Reject round-trip against the live Supabase DB (tested both directions, then reset the row back to status=pending and removed the test approvals rows).",
+      "npm run build and npm run lint both pass clean."
+    ],
+    "phase_h_progress": [
+      "Added web/src/agents/implementation.ts: runImplementation(runDate) ports v1's ImplementationManager — deriveChanges() (increase_budget -> adjust_budget with +MAX_BUDGET_SHIFT_PCT cap; add_negatives -> deriveNegatives() re-deriving candidates from live search_terms/negative_keywords scoped to the approved item's target, zero-conv + cost >= NEGATIVE_KW_MIN_WASTE, top NEGATIVE_MAX_PER_RUN by cost desc, excluding already-blocked terms via a ported buildNegativeMatcher), validateChange() (budget cap + non-empty negative term), persistChange() (upsert into pending_changes by deterministic change_id, dry_run also writes change_log), readApprovedAutoItems() (approved+auto action_plan rows not already queued/executing/done in pending_changes).",
+      "Added web/src/agents/runHourlyImplementation.ts (npm run hourly-implementation) and .github/workflows/hourly-implementation.yml (cron 0 * * * * + workflow_dispatch, npm ci && npm run hourly-implementation with DATABASE_URL secret).",
+      "Added web/src/app/api/pending-changes/route.ts (GET, Bearer/?secret= auth via INGEST_SECRET, returns queued pending_changes rows and flips them to executing) and web/src/app/api/execute-result/route.ts (POST, same auth, updates pending_changes to done/error + upserts change_log row).",
+      "Repointed google_ads_script.js execute mode: runExecute_() now polls GET _apiUrl_('pending-changes') (derived by replacing /api/ingest with /api/<name> in APPS_SCRIPT_WEBHOOK_URL), applies each change via the existing applyChange_/campaignById_/adGroupById_ primitives (unchanged), and POSTs results to /api/execute-result.",
+      "Added pending_changes.params jsonb column via a one-off raw-SQL ALTER TABLE (drizzle-kit push hangs against this Supabase project; raw db.execute(sql\\`...\\`) workaround documented for future additive schema changes).",
+      "Verified end-to-end with synthetic dry-run data (DRY_RUN defaults true, no config.DRY_RUN row exists): budget-increase derivation (100->120, +20%, within cap), negative-keyword derivation, validation, and pending_changes/change_log writes; also live-path tested the full /api/pending-changes -> /api/execute-result round trip (queued -> executing -> done with matching change_log row). All synthetic data and one-off scripts cleaned up afterward.",
+      "npm run build, npm run lint both pass clean."
+    ],
+    "phase_i_progress": [
+      "Added web/src/app/history/page.tsx: read-only page displaying past audit runs and change_log entries, grouped by plan_id with before/after values, success/error status, and dry_run badges. Supports 200 entries limit.",
+      "Added web/src/app/brain/page.tsx, BrainForm.tsx, BrainEntry.tsx: full CRUD for brain_entries. BrainForm supports add/edit with category/source/sourceType/title/summary/keyPoints/rawText fields. BrainEntry shows inline details and edit/delete buttons (edit opens form inline, delete posts to API).",
+      "Added web/src/app/api/brain/route.ts (POST) and web/src/app/api/brain/[id]/route.ts (PUT/DELETE) for managing brain entries. Generates nanoid for new entries, upserts with onConflictDoUpdate pattern.",
+      "Added web/src/app/config/page.tsx and ConfigTable.tsx: editable table of config rows (key/value/description). Inline editing with Save/Cancel buttons, Add Config button for new rows. ConfigTable is a client component (useState for edit mode).",
+      "Added web/src/app/api/config/route.ts (POST/PUT) and web/src/app/api/config/[key]/route.ts (DELETE). Routes handle config CRUD with automatic updatedAt stamping.",
+      "Added web/src/agents/slack.ts: notifyActionPlanDigest(runDate) queries pending action_plan rows for the run_date and POSTs a Slack message with category breakdown + dashboard link button. Non-fatal if SLACK_WEBHOOK_URL is unset or POST fails. Also exports sendSlackNotification() for direct webhook calls.",
+      "Integrated Slack notification into runDailyAudit.ts: calls notifyActionPlanDigest(runDate) after synthesis (non-blocking, failure logged but doesn't abort).",
+      "Updated Nav.tsx to include links to /history, /brain, /config pages (plus existing /, /action-plan).",
+      "Fixed Next.js 16 breaking changes: dynamic route handlers now receive params as Promise<{id:string}> and must await them. Updated brain/[id], config/[key] routes accordingly.",
+      "Fixed dateAdded to use ISO date strings (YYYY-MM-DD) instead of Date objects to match schema column type (date, not timestamp).",
+      "npm run build, npm run lint both pass clean. All routes, pages, and API handlers verified working."
+    ],
+    "phase_j_progress": [
+      "Created PHASE_J_RUNBOOK.md: comprehensive guide for parallel-run validation (Week 1), cutover (Day 7+), and decommissioning. Includes pre-cutover checklist, step-by-step cutover procedure, emergency rollback path, and success metrics.",
+      "Built web/scripts/compare-runs.ts: validation helper script that queries v2 Postgres (findings + action_plan for a given run_date), displays P1/P2/P3 breakdown by category, and provides a checklist for manual spot-checking against v1 Google Sheets. Supports `npm run compare [YYYY-MM-DD]` (defaults to today). Non-invasive, read-only query.",
+      "Added `compare` script to web/package.json for easy daily execution.",
+      "Phase J is operational phase, not feature-building: runs both v1 and v2 in parallel for ~1 week, validates findings equivalence via daily spot-checks (manual + compare script), then cuts over when confident. Minimal code changes; mostly validation and operational steps."
+    ]
+  },
+  "updated_at": "2026-06-12T23:45:00Z"
 }

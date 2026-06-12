@@ -45,6 +45,28 @@ function _qsDetect_(data, ctx) {
   const cfg = ctx.cfg;
   const out = [];
 
+  // Extra rule: new keywords spending above P1 threshold with no QS assigned yet (qs=0/null).
+  for (const k of data.keywords) {
+    const cost = AgentCommon.micros(k.cost_micros);
+    const qs   = Number(k.quality_score) || 0;
+    if (qs === 0 && cost >= cfg.qs_p1_cost) {
+      out.push({
+        id: 'no-qs-spend-' + k.keyword_id, category: 'keywords',
+        severity: 'P2', magnitude: 'medium', confidence: 'medium', effort: 'easy',
+        metric: 'CPA', direction: 'down',
+        target: { type: 'keyword', id: String(k.keyword_id), name: k.text },
+        hint: 'Keyword has no QS assigned yet (new/low volume) but is spending ' +
+              cur + cost.toFixed(0) + '. Monitor closely — if QS stays unassigned ' +
+              'after significant spend, check match type and ad relevance.',
+        evidence: [
+          'QS=none (new/low volume)', 'spend ' + cur + cost.toFixed(0),
+          'match type ' + (k.match_type || '?'), 'ad group ' + k.ad_group_name,
+          k.clicks + ' clicks',
+        ],
+      });
+    }
+  }
+
   for (const k of data.keywords) {
     const cost = AgentCommon.micros(k.cost_micros);
     const qs   = Number(k.quality_score) || 0;

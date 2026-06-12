@@ -80,20 +80,17 @@ function runLandingPageScorer(opts) {
       'page-scoring data (HTTP, speed, content checks) and identify the ' +
       'landing pages dragging down post-click conversion the most.',
     instructions:
-      'Analyze the landing-page scores and surface up to 5 LANDING-PAGE ' +
-      'findings. Focus:\n' +
-      '  1. Broken pages: status_code != 200 → P1, urgent. ' +
-      '     Even a temporary 5xx wastes every click that lands there.\n' +
-      '  2. Slow pages: response_ms > ' + LP_SLOW_RESPONSE_MS + ' → P1/P2. ' +
-      '     Each extra second costs ~7% of conversions per industry benchmarks.\n' +
-      '  3. Heavy pages: response_bytes > ' + LP_HEAVY_BYTES + ' → P2/P3.\n' +
-      '  4. Missing H1 / missing form / missing viewport meta → message-match / ' +
-      '     mobile issues. Suggest a specific copy / structure fix.\n' +
-      '  5. Pages with no CTA verb in detected text → recommend explicit CTAs.\n\n' +
-      'Group findings by URL — one finding per problematic LP, list multiple ' +
-      'issues inside one finding\'s evidence + action.\n' +
-      'Use category="landing_page". target.type = "ad" (the ad pointing at it) ' +
-      'or "campaign" if the URL is used across many ads.',
+      'Analyze the landing-page scores and surface up to 5 LANDING-PAGE findings. Focus:\n' +
+      '  1. Broken pages: status_code != 200 → P1.\n' +
+      '  2. Soft 404: soft_404=true (200 response but "page not found" text) → P1.\n' +
+      '  3. Redirect chain: redirect=YES — note the destination and flag if it adds latency.\n' +
+      '  4. Slow pages: response_ms > ' + LP_SLOW_RESPONSE_MS + ' → P1/P2.\n' +
+      '  5. Missing H1 + missing has_cta_verb → combined P1 (no message, no action).\n' +
+      '  6. Heavy pages: response_bytes > ' + LP_HEAVY_BYTES + ' → P2/P3.\n' +
+      '  7. Missing viewport meta → mobile issue.\n\n' +
+      'Group findings by URL — one finding per problematic LP. ' +
+      'You are a senior PPC analyst. Every finding must include specific numbers from the data. ' +
+      'Use category="landing_page". target.type="ad" or "campaign".',
     data: { scores, targets: AgentCommon.getTargets() },
     formatDataForPrompt(d) {
       return _landingPageScorerFormatData(d);
@@ -106,6 +103,21 @@ function runLandingPageScorer(opts) {
  * ========================================================================= */
 function _scorePage(url) {
   const start = Date.now();
+
+  // First: check for redirects with followRedirects:false (one cheap request).
+  let redirectsTo = null;
+  let redirectCode = 0;
+  try {
+    const rr = UrlFetchApp.fetch(url, {
+      method: 'get', followRedirects: false, muteHttpExceptions: true,
+      headers: { 'User-Agent': LP_USER_AGENT },
+    });
+    redirectCode = rr.getResponseCode();
+    if (redirectCode >= 300 && redirectCode < 400) {
+      redirectsTo = (rr.getHeaders()['Location'] || rr.getHeaders()['location'] || '');
+    }
+  } catch (_e) { /* ignore — main fetch below will surface the real error */ }
+
   let resp = null;
   try {
     resp = UrlFetchApp.fetch(url, {
@@ -117,22 +129,20 @@ function _scorePage(url) {
     });
   } catch (e) {
     return {
-      status_code:    0,
-      response_ms:    Date.now() - start,
-      response_bytes: 0,
-      has_h1:         false,
-      has_form:       false,
-      has_viewport:   false,
-      has_cta_verb:   false,
-      error:          String(e.message || e).slice(0, 200),
+      status_code: 0, response_ms: Date.now() - start, response_bytes: 0,
+      has_h1: false, has_form: false, has_viewport: false, has_cta_verb: false,
+      redirects_to: redirectsTo, redirect_code: redirectCode,
+      soft_404: false, error: String(e.message || e).slice(0, 200),
     };
   }
+
   const elapsed = Date.now() - start;
   const body    = resp.getContentText() || '';
   const bytes   = body.length;
   const lower   = body.toLowerCase();
   const ctaVerbs = ['shop', 'buy', 'get', 'start', 'sign up', 'book', 'order',
                     'subscribe', 'try', 'request', 'download', 'add to cart'];
+  const soft404 = /\b(404|page not found|we couldn't find|page unavailable|doesn't exist|no longer available)\b/i.test(body);
 
   return {
     status_code:    resp.getResponseCode(),
@@ -141,24 +151,27 @@ function _scorePage(url) {
     has_h1:         /<h1[\s>]/i.test(body),
     has_form:       /<form[\s>]/i.test(body),
     has_viewport:   /<meta[^>]+name=["']?viewport/i.test(body),
-    has_cta_verb:   ctaVerbs.some(v => lower.indexOf(v) !== -1),
+    has_cta_verb:   ctaVerbs.some(function(v) { return lower.indexOf(v) !== -1; }),
+    redirects_to:   redirectsTo,
+    redirect_code:  redirectCode,
+    soft_404:       soft404,
     error:          null,
   };
 }
 
 function _landingPageScorerFormatData(d) {
   const lines = [];
-  lines.push(`Landing page scores (${d.scores.length} URLs sampled, top by impressions):`);
-  lines.push('url | status | response_ms | bytes | has_h1 | has_form | has_viewport | has_cta | impressions | ad_id');
+  lines.push('Landing page scores (' + d.scores.length + ' URLs sampled, top by impressions):');
+  lines.push('url | status | redirect | soft_404 | response_ms | bytes | has_h1 | has_form | has_viewport | has_cta | impressions | ad_id');
   for (const s of d.scores) {
+    const redirectFlag = s.redirects_to ? 'YES→' + String(s.redirects_to).slice(0, 60) : 'no';
     lines.push(
-      `${s.url} | ${s.status_code} | ${s.response_ms}ms | ${s.response_bytes} | ` +
-      `${s.has_h1} | ${s.has_form} | ${s.has_viewport} | ${s.has_cta_verb} | ` +
-      `${s.ctx.impressions} | ${s.ctx.ad_id}`
+      s.url + ' | ' + s.status_code + ' | ' + redirectFlag + ' | ' + s.soft_404 + ' | ' +
+      s.response_ms + 'ms | ' + s.response_bytes + ' | ' +
+      s.has_h1 + ' | ' + s.has_form + ' | ' + s.has_viewport + ' | ' + s.has_cta_verb + ' | ' +
+      s.ctx.impressions + ' | ' + s.ctx.ad_id
     );
-    if (s.error) {
-      lines.push(`  ERROR: ${s.error}`);
-    }
+    if (s.error) lines.push('  ERROR: ' + s.error);
   }
   return lines.join('\n');
 }

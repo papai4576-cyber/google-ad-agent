@@ -25,13 +25,14 @@ function setupEverything() {
 
   const results = [];
 
-  results.push(safe_(() => attachSpreadsheet_(),       'Attach Spreadsheet'));
-  results.push(safe_(() => createAllTabs_(),           'Create 15 tabs'));
-  results.push(safe_(() => seedConfigTab_(),           'Seed Config tab'));
-  results.push(safe_(() => createBrainFolder_(),       'Create Brain Drive folder'));
-  results.push(safe_(() => verifyGroq_(),              'Verify Groq API key'));
-  results.push(safe_(() => verifyGemini_(),            'Verify Gemini API key'));
-  results.push(safe_(() => installDashboardTrigger(),  'Install dashboard onEdit trigger'));
+  results.push(safe_(() => attachSpreadsheet_(),                  'Attach Spreadsheet'));
+  results.push(safe_(() => createAllTabs_(),                      'Create tabs'));
+  results.push(safe_(() => hideInternalTabs_(),                   'Hide internal tabs'));
+  results.push(safe_(() => seedConfigTab_(),                      'Seed Config tab'));
+  results.push(safe_(() => createBrainFolder_(),                  'Create Brain Drive folder'));
+  results.push(safe_(() => verifyGroq_(),                         'Verify Groq API key'));
+  results.push(safe_(() => installDashboardTrigger(),             'Install dashboard onEdit trigger'));
+  results.push(safe_(() => installReactionListenerTrigger_(),     'Install reaction-listener trigger'));
 
   log_('setup', '');
   log_('setup', 'Results:');
@@ -72,37 +73,44 @@ function createAllTabs_() {
   let created = 0;
   let kept = 0;
 
+  const errors = [];
   for (const name of tabNames) {
-    const schema = SHEETS[name];
-    let sheet = ss.getSheetByName(name);
-    if (sheet) {
-      kept++;
-    } else {
-      sheet = ss.insertSheet(name);
-      created++;
+    try {
+      const schema = SHEETS[name];
+      let sheet = ss.getSheetByName(name);
+      if (sheet) { kept++; } else { sheet = ss.insertSheet(name); created++; }
+
+      // The Dashboard tab is fully owned/rendered by Dashboard.js (title banner +
+      // a data-validation dropdown in B1). Writing generic schema headers here
+      // collides with that dropdown's validation — so we only ensure the tab
+      // exists and let refreshDashboard() lay it out.
+      if (name === 'Dashboard') {
+        setSheetDescription_(sheet, schema.description);
+        continue;
+      }
+
+      // Write headers if the sheet is empty or the headers don't match. Clear
+      // any data validation on the header row first so a stray dropdown can't
+      // block the write.
+      const headerRange = sheet.getRange(1, 1, 1, schema.headers.length);
+      const existing = sheet.getRange(1, 1, 1, Math.max(schema.headers.length, 1))
+        .getValues()[0].map(v => String(v).trim());
+      const matches = existing.length >= schema.headers.length &&
+        schema.headers.every((h, i) => existing[i] === h);
+      if (!matches) {
+        headerRange.clearDataValidations();
+        headerRange.setValues([schema.headers]);
+      }
+      headerRange.setFontWeight('bold').setBackground('#f1f3f4');
+      sheet.setFrozenRows(1);
+      setSheetDescription_(sheet, schema.description);
+    } catch (e) {
+      // One tab's problem must not abort the rest (e.g. Pending_Changes).
+      errors.push(`${name}: ${String(e.message || e).slice(0, 120)}`);
+      log_('setup', `  tab "${name}" failed: ${e.message || e}`);
     }
-
-    // Write headers if the sheet is empty or the headers don't match.
-    const existing = sheet.getRange(1, 1, 1, Math.max(schema.headers.length, 1))
-      .getValues()[0]
-      .map(v => String(v).trim());
-    const matches =
-      existing.length >= schema.headers.length &&
-      schema.headers.every((h, i) => existing[i] === h);
-
-    if (!matches) {
-      sheet.getRange(1, 1, 1, schema.headers.length).setValues([schema.headers]);
-    }
-
-    // Format header row.
-    const headerRange = sheet.getRange(1, 1, 1, schema.headers.length);
-    headerRange.setFontWeight('bold');
-    headerRange.setBackground('#f1f3f4');
-    sheet.setFrozenRows(1);
-
-    // Stash the description in a developer-metadata field on the sheet.
-    setSheetDescription_(sheet, schema.description);
   }
+  if (errors.length) throw new Error(`${errors.length} tab(s) failed: ${errors.join(' | ')}`);
 
   // Delete the default "Sheet1" if it's empty and untouched.
   const def = ss.getSheetByName('Sheet1');
@@ -144,8 +152,6 @@ function seedConfigTab_() {
     WEEKLY_RUN_DAY:         ['SUN',   'Day of week for the weekly deep audit run.'],
     SLACK_CHANNEL_NAME:     ['#ads-agent', 'Display name only — actual channel ID is in Script Properties.'],
     BRAIN_REFRESH_HOUR:     ['3',     'Hour for nightly Brain Drive folder re-index.'],
-    REDDIT_SUBS:            ['PPC,googleads,marketing,Entrepreneur', 'Comma-separated subreddit list for Reddit Hunter (only used if you wire Reddit OAuth).'],
-    REDDIT_MIN_UPVOTES:     ['50',    'Filter: ignore Reddit posts below this upvote threshold.'],
     CONTENT_LOOKBACK_DAYS:  ['7',     'ContentHunter: index RSS items published within this many days.'],
     CONTENT_FEEDS_JSON:     ['',      'ContentHunter: optional JSON array [{"name":"...","url":"..."}] to override default PPC blog feeds.'],
     NEGATIVE_KW_MIN_WASTE:  ['50',    'NegativeKwHunter: minimum spend (in account currency) for a zero-conversion term to be considered for negation.'],
@@ -153,6 +159,8 @@ function seedConfigTab_() {
     MIN_IMPRESSIONS:        ['0',     'Materiality: read-time floor on impressions for an entity to be analysed (collection already drops 0-impression keywords/terms).'],
     MIN_CONV_FOR_CPA:       ['5',     'Significance: minimum conversions before a CPA/ROAS-based conclusion is trustworthy.'],
     MIN_CLICKS_FOR_CVR:     ['30',    'Significance: minimum clicks before a conversion-rate conclusion is trustworthy.'],
+    GROQ_DAILY_TOKEN_CEILING:   ['90000', 'Proactive cap: once Groq usage (UTC day) hits this, callLLM throws fast instead of risking Groq\'s hard 100K/day limit. 0 = no ceiling.'],
+    NEGATIVE_MAX_PER_RUN:   ['20',    'Phase 12: max negative keywords the ImplementationManager will queue per approved finding per run.'],
   };
 
   // Read existing config keys so we don't overwrite the user's edits.
@@ -247,37 +255,6 @@ function verifyGroq_() {
   return `reached Groq ${LLM.model} (replied "${text || '<empty>'}")`;
 }
 
-function verifyGemini_() {
-  const reg = LLM_PROVIDERS.gemini;
-  const key = PROPS.get(reg.apiKeyProp);
-  if (!key) {
-    return 'skipped — GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey ' +
-           'and add it in Project Settings → Script Properties. Until then, Gemini-assigned ' +
-           'agents fail over to Groq automatically.';
-  }
-
-  const url = reg.endpoint.replace('{model}', reg.model) + '?key=' + encodeURIComponent(key);
-  const payload = {
-    contents: [{ role: 'user', parts: [{ text: 'Reply with exactly the word: pong' }] }],
-    generationConfig: { temperature: 0, maxOutputTokens: 8 },
-  };
-
-  const resp = UrlFetchApp.fetch(url, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
-
-  const code = resp.getResponseCode();
-  if (code !== 200) {
-    throw new Error(`Gemini returned HTTP ${code}: ${resp.getContentText().slice(0, 300)}`);
-  }
-  const body = JSON.parse(resp.getContentText());
-  let text = '';
-  try { text = body.candidates[0].content.parts[0].text.trim(); } catch (_e) { text = ''; }
-  return `reached Gemini ${reg.model} (replied "${text || '<empty>'}")`;
-}
 
 /* ───────────────────────── helpers ──────────────────────────────────────── */
 
@@ -295,6 +272,41 @@ function safe_(fn, label) {
 }
 
 /**
+ * Hide all tabs except the 5 user-facing ones. Safe to call on an already-
+ * deployed sheet — idempotent. Called by setupEverything() and can be run
+ * standalone to tidy an existing sheet without re-running the full bootstrap.
+ */
+function hideInternalTabs_() {
+  const VISIBLE = new Set(['Dashboard', 'Action_Plan', 'Change_Log', 'Config', 'Brain']);
+  const ss = SpreadsheetApp.openById(PROPS.require('SPREADSHEET_ID'));
+  let hidden = 0, shown = 0;
+  for (const sheet of ss.getSheets()) {
+    const name = sheet.getName();
+    if (VISIBLE.has(name)) {
+      try { sheet.showSheet(); shown++; } catch (_e) {}
+    } else {
+      try { sheet.hideSheet(); hidden++; } catch (_e) {}
+    }
+  }
+  return `shown=${shown}, hidden=${hidden}`;
+}
+
+/**
+ * Install a time-driven trigger that calls ReactionListener.pollReactions()
+ * every 30 minutes. Idempotent: skips if a matching trigger already exists.
+ */
+function installReactionListenerTrigger_() {
+  const FN = 'pollReactions';
+  const existing = ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === FN);
+  if (existing.length > 0) return 'already installed (' + existing.length + ' trigger(s))';
+  ScriptApp.newTrigger(FN)
+    .timeBased()
+    .everyMinutes(30)
+    .create();
+  return 'installed — polls Slack reactions every 30 min';
+}
+
+/**
  * Helper: print the current state of setup. Useful for re-checking without
  * running the full bootstrap.
  */
@@ -304,7 +316,6 @@ function showSetupStatus() {
   log_('status', `SPREADSHEET_ID         = ${props.SPREADSHEET_ID || '(not set)'}`);
   log_('status', `BRAIN_DRIVE_FOLDER_ID  = ${props.BRAIN_DRIVE_FOLDER_ID || '(not set)'}`);
   log_('status', `GROQ_API_KEY           = ${props.GROQ_API_KEY ? '(set, ' + props.GROQ_API_KEY.length + ' chars)' : '(not set)'}`);
-  log_('status', `GEMINI_API_KEY         = ${props.GEMINI_API_KEY ? '(set, ' + props.GEMINI_API_KEY.length + ' chars)' : '(not set — Gemini agents fail over to Groq)'}`);
   log_('status', `SLACK_BOT_TOKEN        = ${props.SLACK_BOT_TOKEN ? '(set)' : '(not set, fine for phases 1–10)'}`);
   log_('status', `SLACK_WEBHOOK_URL      = ${props.SLACK_WEBHOOK_URL ? '(set)' : '(not set, fine for phases 1–10)'}`);
   log_('status', `SLACK_CHANNEL_ID       = ${props.SLACK_CHANNEL_ID ? '(set)' : '(not set, fine for phases 1–10)'}`);

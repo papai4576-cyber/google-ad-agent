@@ -274,6 +274,13 @@ function _ratioPct_(agg, num, den) { return _ratio_(agg, num, den) * 100; }
  * ========================================================================= */
 
 function _appendHealthSections_(ss, push) {
+  // ===== LLM usage today (Groq) =====
+  push(['LLM USAGE TODAY (UTC ' + utcDateString_() + ')', '', '', '', '', '', '', '']);
+  const gT = tokensUsedToday('groq'), gR = requestsToday('groq');
+  const gCeil = dailyTokenCeiling('groq');
+  push(['Groq', _n_(gT) + ' tok' + (gCeil ? ' / ' + _n_(gCeil) : ''), '', '', '', '', '',
+        gR + ' requests' + (gCeil ? '  (' + Math.round(gT / gCeil * 100) + '% of daily ceiling)' : '')]);
+
   const findings = _latestRows_(ss, 'Findings');
   push(['LATEST FINDINGS', '', '', '', '', '', '', findings.runDate || 'n/a']);
   if (findings.rows.length === 0) {
@@ -360,7 +367,7 @@ function _writeBody_(sheet, body) {
 
 function _formatDashboard_(sheet, body) {
   const startRow = 3;
-  const SECTION = /^(KPI|BUDGET|CAMPAIGNS|LATEST|ACTION|BRAIN)/;
+  const SECTION = /^(KPI|BUDGET|CAMPAIGNS|LLM|LATEST|ACTION|BRAIN)/;
   for (let i = 0; i < body.length; i++) {
     const a = String(body[i][0]);
     const isSection = SECTION.test(a) && body[i][1] === '';
