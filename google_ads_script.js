@@ -408,7 +408,7 @@ function fetchSearchTerms_(runDate, dateRange) {
 function fetchExtensions_(runDate, dateRange) {
   const query = `
     SELECT
-      campaign.id, campaign.status,
+      campaign.id, campaign.status, campaign.experiment_type,
       asset.id, asset.type, asset.name,
       asset.sitelink_asset.link_text,
       asset.callout_asset.callout_text,
