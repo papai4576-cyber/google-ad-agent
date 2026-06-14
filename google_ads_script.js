@@ -156,6 +156,7 @@ function fetchCampaigns_(runDate, dateRange) {
     FROM campaign
     WHERE segments.date DURING ${dateRange}
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
     ORDER BY metrics.cost_micros DESC
   `;
   const rows = [];
@@ -200,6 +201,7 @@ function fetchCampaignsDaily_(runDate) {
     FROM campaign
     WHERE segments.date DURING LAST_30_DAYS
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
     ORDER BY segments.date DESC
   `;
   const rows = [];
@@ -235,6 +237,7 @@ function fetchAdGroups_(runDate, dateRange) {
     WHERE segments.date DURING ${dateRange}
       AND ad_group.status = 'ENABLED'
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
     ORDER BY metrics.cost_micros DESC
   `;
   const rows = [];
@@ -280,6 +283,7 @@ function fetchKeywords_(runDate, dateRange) {
       AND ad_group_criterion.status = 'ENABLED'
       AND ad_group.status = 'ENABLED'
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
       AND metrics.impressions > 0
     ORDER BY metrics.cost_micros DESC
     LIMIT ${CONFIG.LIMITS.keywords}
@@ -373,6 +377,7 @@ function fetchSearchTerms_(runDate, dateRange) {
     WHERE segments.date DURING ${dateRange}
       AND metrics.impressions > 0
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
       AND ad_group.status = 'ENABLED'
     ORDER BY metrics.cost_micros DESC
     LIMIT ${CONFIG.LIMITS.search_terms}
@@ -414,6 +419,7 @@ function fetchExtensions_(runDate, dateRange) {
     WHERE segments.date DURING ${dateRange}
       AND campaign_asset.status = 'ENABLED'
       AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
       AND asset.type IN ('SITELINK','CALLOUT','STRUCTURED_SNIPPET','PROMOTION','CALL','PRICE')
     LIMIT ${CONFIG.LIMITS.extensions}
   `;
@@ -468,6 +474,7 @@ function fetchNegativeKeywords_(runDate) {
         AND ad_group_criterion.type = 'KEYWORD'
         AND ad_group.status = 'ENABLED'
         AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
       LIMIT 10000
     `;
     const it = AdsApp.report(q1).rows();
@@ -501,6 +508,7 @@ function fetchNegativeKeywords_(runDate) {
       WHERE campaign_criterion.negative = TRUE
         AND campaign_criterion.type = 'KEYWORD'
         AND campaign.status = 'ENABLED'
+      AND campaign.experiment_type = 'BASE'
       LIMIT 10000
     `;
     const it = AdsApp.report(q2).rows();
