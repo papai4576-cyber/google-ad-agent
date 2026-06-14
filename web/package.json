@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "daily-audit": "tsx --require ./scripts/load-env.cjs src/agents/runDailyAudit.ts",
     "hourly-implementation": "tsx --require ./scripts/load-env.cjs src/agents/runHourlyImplementation.ts",
-    "compare": "tsx --require ./scripts/load-env.cjs scripts/compare-runs.ts"
+    "compare": "tsx --require ./scripts/load-env.cjs scripts/compare-runs.ts",
+    "seed-config": "tsx --require ./scripts/load-env.cjs scripts/seed-config.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

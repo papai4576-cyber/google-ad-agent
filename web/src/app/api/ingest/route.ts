@@ -28,6 +28,11 @@ function numOrNull(v: unknown): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+function intOrNull(v: unknown): number | null {
+  const n = numOrNull(v);
+  return n === null ? null : Math.round(n);
+}
+
 function strOrNull(v: unknown): string | null {
   if (v === "" || v === null || v === undefined) return null;
   return String(v);
@@ -53,16 +58,16 @@ function mapCampaign(r: Row) {
     status: String(r.status ?? ""),
     channelType: strOrNull(r.channel_type),
     biddingStrategy: strOrNull(r.bidding_strategy),
-    targetCpaMicros: numOrNull(r.target_cpa_micros),
+    targetCpaMicros: intOrNull(r.target_cpa_micros),
     targetRoas: numOrNull(r.target_roas),
-    budgetMicros: numOrNull(r.budget_micros),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    budgetMicros: intOrNull(r.budget_micros),
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     conversionValue: numOrNull(r.conversion_value) ?? 0,
     ctr: numOrNull(r.ctr),
-    avgCpcMicros: numOrNull(r.avg_cpc_micros),
+    avgCpcMicros: intOrNull(r.avg_cpc_micros),
     searchIs: numOrNull(r.search_is),
     searchBudgetLostIs: numOrNull(r.search_budget_lost_is),
     searchRankLostIs: numOrNull(r.search_rank_lost_is),
@@ -75,9 +80,9 @@ function mapCampaignDaily(r: Row) {
     date: String(r.date),
     runDate: String(r.run_date),
     campaignName: String(r.campaign_name ?? ""),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     conversionValue: numOrNull(r.conversion_value) ?? 0,
   };
@@ -90,11 +95,11 @@ function mapAdGroup(r: Row) {
     adGroupName: String(r.ad_group_name ?? ""),
     status: String(r.status ?? ""),
     campaignId: String(r.campaign_id),
-    cpcBidMicros: numOrNull(r.cpc_bid_micros),
-    targetCpaMicros: numOrNull(r.target_cpa_micros),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    cpcBidMicros: intOrNull(r.cpc_bid_micros),
+    targetCpaMicros: intOrNull(r.target_cpa_micros),
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     conversionValue: numOrNull(r.conversion_value) ?? 0,
     avgQualityScore: numOrNull(r.avg_quality_score),
@@ -112,18 +117,18 @@ function mapKeyword(r: Row) {
     campaignName: String(r.campaign_name ?? ""),
     adGroupId: String(r.ad_group_id),
     adGroupName: String(r.ad_group_name ?? ""),
-    cpcBidMicros: numOrNull(r.cpc_bid_micros),
-    qualityScore: numOrNull(r.quality_score),
+    cpcBidMicros: intOrNull(r.cpc_bid_micros),
+    qualityScore: intOrNull(r.quality_score),
     creativeQuality: strOrNull(r.creative_quality),
     postClickQuality: strOrNull(r.post_click_quality),
     searchPredictedCtr: strOrNull(r.search_predicted_ctr),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     conversionValue: numOrNull(r.conversion_value) ?? 0,
     ctr: numOrNull(r.ctr),
-    avgCpcMicros: numOrNull(r.avg_cpc_micros),
+    avgCpcMicros: intOrNull(r.avg_cpc_micros),
   };
 }
 
@@ -139,12 +144,12 @@ function mapAd(r: Row) {
     headlines: parseJsonArray(r.headlines_json),
     descriptions: parseJsonArray(r.descriptions_json),
     finalUrls: parseJsonArray(r.final_urls_json),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     ctr: numOrNull(r.ctr),
-    avgCpcMicros: numOrNull(r.avg_cpc_micros),
+    avgCpcMicros: intOrNull(r.avg_cpc_micros),
   };
 }
 
@@ -157,12 +162,12 @@ function mapSearchTerm(r: Row) {
     campaignName: String(r.campaign_name ?? ""),
     adGroupId: String(r.ad_group_id),
     adGroupName: String(r.ad_group_name ?? ""),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
-    costMicros: numOrNull(r.cost_micros) ?? 0,
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
+    costMicros: intOrNull(r.cost_micros) ?? 0,
     conversions: numOrNull(r.conversions) ?? 0,
     ctr: numOrNull(r.ctr),
-    avgCpcMicros: numOrNull(r.avg_cpc_micros),
+    avgCpcMicros: intOrNull(r.avg_cpc_micros),
   };
 }
 
@@ -175,8 +180,8 @@ function mapExtension(r: Row) {
     adGroupId: strOrNull(r.ad_group_id),
     text: strOrNull(r.text),
     status: strOrNull(r.status),
-    impressions: numOrNull(r.impressions) ?? 0,
-    clicks: numOrNull(r.clicks) ?? 0,
+    impressions: intOrNull(r.impressions) ?? 0,
+    clicks: intOrNull(r.clicks) ?? 0,
     ctr: numOrNull(r.ctr),
   };
 }
