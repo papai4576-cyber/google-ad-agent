@@ -26,7 +26,7 @@ jobs:
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-      - run: npm ci
+      - run: npm install
 
       - run: npm run hourly-implementation
         env:
