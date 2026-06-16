@@ -60,7 +60,29 @@ export async function buildAudienceCopyAnalystSpec(): Promise<RuleBasedAnalystSp
     brainCategories: ["audience", "copy", "brand"],
     brainLimit: 5,
     data: { campaigns, adGroups, ads, brandKeywords },
-    formatDataForPrompt: () => "",
+    formatDataForPrompt: (d) => {
+      // Map campaign names for lookup
+      const campName = new Map(d.campaigns.map((c) => [c.campaignId, c.campaignName]));
+      // Group ads by ad group
+      const adsByAg = new Map<string, typeof d.ads>();
+      for (const ad of d.ads) {
+        const list = adsByAg.get(ad.adGroupId) ?? [];
+        list.push(ad);
+        adsByAg.set(ad.adGroupId, list);
+      }
+      const lines = [`AD GROUPS & ADS (brand keywords: ${d.brandKeywords.join(", ") || "none configured"}):`];
+      for (const ag of d.adGroups.slice(0, 20)) {
+        const campaign = campName.get(ag.campaignId) ?? ag.campaignId;
+        const agAds = adsByAg.get(ag.adGroupId) ?? [];
+        lines.push(`AdGroup "${ag.adGroupName}" [${ag.adGroupId}] (campaign: "${campaign}") | spend=${micros(ag.costMicros).toFixed(0)} conv=${ag.conversions || 0}`);
+        for (const ad of agAds.slice(0, 3)) {
+          const headlines = (ad.headlines ?? []).slice(0, 4).join(" | ");
+          const ctr = ((Number(ad.ctr) || 0) * 100).toFixed(2);
+          lines.push(`  Ad [${ad.adId}] ctr=${ctr}% impr=${ad.impressions || 0} headlines: "${headlines}"`);
+        }
+      }
+      return lines.join("\n");
+    },
     ruleConfig,
     detect: detectAudienceCopy,
     maxCandidates: 10,

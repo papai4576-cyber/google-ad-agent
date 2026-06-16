@@ -63,7 +63,26 @@ export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnal
     brainCategories: ["bidding", "scaling", "general"],
     brainLimit: 5,
     data: { campaigns },
-    formatDataForPrompt: () => "",
+    formatDataForPrompt: (data) => {
+      const lines = ["CAMPAIGNS (all enabled, latest snapshot):"];
+      for (const c of data.campaigns) {
+        const budget = micros(c.budgetMicros);
+        const spend = micros(c.costMicros);
+        const conv = Number(c.conversions) || 0;
+        const convVal = Number(c.conversionValue) || 0;
+        const roas = spend > 0 && convVal > 0 ? (convVal / spend).toFixed(2) : "n/a";
+        const cpa = conv > 0 ? (spend / conv).toFixed(0) : "n/a";
+        const ctr = ((Number(c.ctr) || 0) * 100).toFixed(2);
+        const bLost = ((Number(c.searchBudgetLostIs) || 0) * 100).toFixed(0);
+        const rLost = ((Number(c.searchRankLostIs) || 0) * 100).toFixed(0);
+        lines.push(
+          `[${c.campaignId}] "${c.campaignName}" | ${c.channelType || "SEARCH"} | ${c.biddingStrategy || "unknown"} | ` +
+          `budget=${budget.toFixed(0)}/day spend=${spend.toFixed(0)} conv=${conv} cpa=${cpa} roas=${roas} ` +
+          `ctr=${ctr}% is_lost_budget=${bLost}% is_lost_rank=${rLost}%`
+        );
+      }
+      return lines.join("\n");
+    },
     ruleConfig,
     detect: detectPerformanceBudget,
     maxCandidates: 8,

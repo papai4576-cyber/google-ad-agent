@@ -58,7 +58,38 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
     brainCategories: ["structure", "copy", "landing_page"],
     brainLimit: 4,
     data,
-    formatDataForPrompt: () => "",
+    formatDataForPrompt: (d) => {
+      const lines = ["ACCOUNT STRUCTURE:"];
+      // Group ad groups by campaign
+      const agByCampaign = new Map<string, typeof d.adGroups>();
+      for (const ag of d.adGroups) {
+        const list = agByCampaign.get(ag.campaignId) ?? [];
+        list.push(ag);
+        agByCampaign.set(ag.campaignId, list);
+      }
+      // Keywords by ad group
+      const kwByAdGroup = new Map<string, typeof d.keywords>();
+      for (const kw of d.keywords) {
+        const list = kwByAdGroup.get(kw.adGroupId) ?? [];
+        list.push(kw);
+        kwByAdGroup.set(kw.adGroupId, list);
+      }
+      // Active ad count by ad group
+      const adsByAdGroup = new Map<string, number>();
+      for (const ad of d.ads) {
+        adsByAdGroup.set(ad.adGroupId, (adsByAdGroup.get(ad.adGroupId) ?? 0) + 1);
+      }
+      for (const c of d.campaigns.slice(0, 12)) {
+        const ags = agByCampaign.get(c.campaignId) ?? [];
+        lines.push(`Campaign "${c.campaignName}" [${c.campaignId}] | ${c.biddingStrategy || ""} | ${ags.length} ad groups`);
+        for (const ag of ags.slice(0, 8)) {
+          const kws = (kwByAdGroup.get(ag.adGroupId) ?? []).slice(0, 4).map((k) => `"${k.text}"[${k.matchType}]`);
+          const adCount = adsByAdGroup.get(ag.adGroupId) ?? 0;
+          lines.push(`  AdGroup "${ag.adGroupName}" [${ag.adGroupId}] | qs=${ag.avgQualityScore ?? "n/a"} | ${adCount} ads | keywords: ${kws.join(", ") || "none"}`);
+        }
+      }
+      return lines.join("\n");
+    },
     ruleConfig,
     detect: detectQualityStructure,
     maxCandidates: 8,

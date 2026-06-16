@@ -20,7 +20,7 @@
  * — including @/db — is evaluated).
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and, gte, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { findings as findingsTable, config } from "@/db/schema";
 import { runPureLLMAnalyst, runRuleBasedAnalyst } from "./runAnalyst";
@@ -126,8 +126,15 @@ async function main() {
 
   await writeFindings(synthFindings, runDate);
 
+  // 2b. Cross-day dedup: suppress P2/P3 findings whose IDs already fired in
+  //     the last 3 days (P1s always surface — they are urgent).
+  const recentIds = await getRecentFindingIds(runDate, 3);
+  const freshFindings = synthFindings.filter((f) => f.severity === "P1" || !recentIds.has(f.id));
+  const suppressed = synthFindings.length - freshFindings.length;
+  if (suppressed > 0) console.log(`[daily-audit] cross-day dedup: suppressed ${suppressed} repeat P2/P3 findings`);
+
   // 3. Synthesis: dedup -> cross-agent patterns -> scoring -> action_plan.
-  const result = await runSynthesis(synthFindings, runDate);
+  const result = await runSynthesis(freshFindings, runDate);
 
   console.log("-------------------------------------------");
   console.log(
@@ -153,6 +160,19 @@ async function main() {
   }
 
   console.log(`daily-audit done. ${summary}`);
+}
+
+/** Return finding IDs that already appeared in the last `days` days (excluding today). */
+async function getRecentFindingIds(runDate: string, days: number): Promise<Set<string>> {
+  if (!db) return new Set();
+  const since = new Date(runDate);
+  since.setUTCDate(since.getUTCDate() - days);
+  const sinceStr = since.toISOString().split("T")[0];
+  const rows = await db
+    .select({ findingId: findingsTable.findingId })
+    .from(findingsTable)
+    .where(and(gte(findingsTable.runDate, sinceStr), ne(findingsTable.runDate, runDate)));
+  return new Set(rows.map((r) => r.findingId));
 }
 
 async function writeFindings(synthFindings: SynthFinding[], runDate: string): Promise<void> {

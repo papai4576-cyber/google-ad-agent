@@ -166,6 +166,7 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
   }
 
   const brain = await queryBrain(spec.brainCategories, spec.brainLimit ?? 4);
+  const accountData = spec.formatDataForPrompt(spec.data);
   const systemPrompt = buildRuleSystemPrompt(spec.persona, spec.instructions);
   const userPrompt =
     (await formatDataContext()) +
@@ -174,6 +175,7 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
     JSON.stringify(ctx.targets) +
     "\n\n" +
     formatBrainContext(brain) +
+    (accountData ? "\n\n--- ACCOUNT DATA ---\n" + accountData : "") +
     "\n\n" +
     "--- PRE-DETECTED ISSUES (write each one up; do NOT add or drop any) ---\n" +
     renderCandidates(candidates);
@@ -358,11 +360,15 @@ function candidateScore(c: Candidate): number {
  * ========================================================================= */
 
 export async function formatDataContext(): Promise<string> {
-  const range = await getConfigValue("LAST_COLLECT_DATE_RANGE", "unknown");
-  const date = await getConfigValue("LAST_COLLECT_DATE", "unknown");
-  const mode = await getConfigValue("LAST_COLLECT_MODE", "unknown");
+  const [range, date, mode, accountDesc] = await Promise.all([
+    getConfigValue("LAST_COLLECT_DATE_RANGE", "unknown"),
+    getConfigValue("LAST_COLLECT_DATE", "unknown"),
+    getConfigValue("LAST_COLLECT_MODE", "unknown"),
+    getConfigValue("ACCOUNT_DESCRIPTION", ""),
+  ]);
   const human = humanizeRange(range);
   return (
+    (accountDesc ? `ACCOUNT CONTEXT: ${accountDesc}\n\n` : "") +
     "DATA CONTEXT:\n" +
     "  - All numbers below are TOTALS over the lookback window.\n" +
     `  - Window:        ${human} (${range}, mode=${mode})\n` +
