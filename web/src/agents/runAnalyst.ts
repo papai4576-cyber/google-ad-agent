@@ -290,6 +290,13 @@ export function buildSystemPrompt(persona: string, instructionsForDomain: string
     "  hard   = restructuring or new infrastructure\n\n" +
     "Rules:\n" +
     "  - Return ONLY the JSON object. No prose, no markdown fences.\n" +
+    "  SPECIFICITY (CRITICAL — generic output is a failure):\n" +
+    "  - Every `what`, `why`, and `action` MUST name the specific entity (campaign name, keyword text, ad group name). NEVER write 'the campaign' — use its actual name.\n" +
+    '    BAD:  "The keyword has a low Quality Score and high CPA."\n' +
+    '    GOOD: "Keyword \\"buy chyawanprash online\\" (broad, Ad Group \\"General Health\\") has QS 3/10 with ₹12,400 spend and only 3 conv — CPA ₹4,133 vs ₹200 target."\n' +
+    "  - `why` MUST include at least 2 specific numbers from the data (₹, %, x, conv count).\n" +
+    "  - `action` must be specific: name the entity and state the value to change TO.\n" +
+    "  - `evidence` MUST contain actual data points from the DATA section (not paraphrases).\n" +
     "  - Quantify amounts using the CURRENCY symbol given in the TARGETS block of the user prompt (NEVER assume $). Use % freely.\n" +
     '  - target.type MUST be EXACTLY one of: "campaign", "adgroup", "keyword", "ad". NO other values are allowed. NEVER use "budget", "bid", "strategy", "account", "monthly_budget", "ad_group", or anything else.\n' +
     '    - Budget / pacing findings → target.type = "campaign" (budget belongs to the campaign)\n' +
@@ -321,7 +328,14 @@ export function buildRuleSystemPrompt(persona: string, instructions: string): st
     "  - Use ONLY the evidence numbers given — never fabricate data.\n" +
     "  - Quantify money with the currency symbol in TARGETS (never assume $).\n" +
     "  - Cite a brain id in brain_sources only if you actually used it.\n" +
-    "  - Return ONLY the JSON object — no prose, no markdown fences.\n"
+    "  - Return ONLY the JSON object — no prose, no markdown fences.\n" +
+    "  SPECIFICITY (CRITICAL — generic output is a failure):\n" +
+    "  - In `what`, `why`, and `action`: ALWAYS use the EXACT entity name from the target field.\n" +
+    '    BAD:  "The campaign has a high CPA above target."\n' +
+    '    GOOD: "Campaign \\"Baidyanath Chyawanprash\\" has CPA ₹1,840 — 9.2x above the ₹200 target."\n' +
+    "  - In `why`: embed the ACTUAL numbers from the `data` line — spend, conv, CPA, ROAS, CTR, IS%.\n" +
+    "  - In `action`: state the specific value to change TO (e.g. 'reduce daily budget from ₹3,500 to ₹2,800').\n" +
+    "  - NEVER write 'the campaign', 'this campaign', 'the keyword' — always use its name.\n"
   );
 }
 
