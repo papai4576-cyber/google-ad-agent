@@ -43,7 +43,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error("[hourly-implementation] FATAL:", e);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error("[hourly-implementation] FATAL:", e);
+    process.exit(1);
+  });

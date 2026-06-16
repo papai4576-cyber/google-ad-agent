@@ -203,7 +203,9 @@ async function stampConfig(runDate: string, summary: string): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  console.error("[daily-audit] FATAL:", e);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error("[daily-audit] FATAL:", e);
+    process.exit(1);
+  });
