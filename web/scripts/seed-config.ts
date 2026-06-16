@@ -179,6 +179,28 @@ const DEFAULT_CONFIG = [
     description: "Landing page size threshold (bytes)",
   },
 
+  // Account targets
+  {
+    key: "MONTHLY_BUDGET_TARGET",
+    value: "213000",
+    description: "Monthly total ad spend target in account currency (₹7,100/day × 30)",
+  },
+  {
+    key: "CURRENCY_SYMBOL",
+    value: "₹",
+    description: "Currency symbol shown in the dashboard (e.g. ₹, $, €)",
+  },
+  {
+    key: "TARGET_CPA",
+    value: "200",
+    description: "Target CPA (cost per conversion) in account currency",
+  },
+  {
+    key: "TARGET_ROAS",
+    value: "4.0",
+    description: "Target ROAS (return on ad spend, e.g. 4.0 = 4x)",
+  },
+
   // API & LLM Limits
   {
     key: "GROQ_DAILY_TOKEN_CEILING",
