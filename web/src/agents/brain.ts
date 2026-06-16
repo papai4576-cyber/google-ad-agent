@@ -6,7 +6,7 @@
  * Add/edit entries are managed via the /brain dashboard page (Phase I), not here.
  */
 
-import { inArray, desc } from "drizzle-orm";
+import { inArray, desc, eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { brainEntries } from "@/db/schema";
 import type { BrainCategory } from "./schema";
@@ -37,7 +37,7 @@ export async function queryBrain(categories: BrainCategory[], limit = 5): Promis
       dateAdded: brainEntries.dateAdded,
     })
     .from(brainEntries)
-    .where(inArray(brainEntries.category, categories))
+    .where(and(inArray(brainEntries.category, categories), eq(brainEntries.status, "active")))
     .orderBy(desc(brainEntries.dateAdded))
     .limit(limit);
 

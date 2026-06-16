@@ -1,0 +1,33 @@
+name: Weekly Brain Learning
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC (after Sunday data is collected)
+  workflow_dispatch:        # manual trigger from GitHub Actions UI
+
+jobs:
+  brain-learning:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm install
+
+      - name: Run Brain Learning Agent
+        working-directory: web
+        run: npm run brain-learning
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

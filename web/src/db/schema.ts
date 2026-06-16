@@ -269,6 +269,7 @@ export const brainEntries = pgTable("brain_entries", {
   summary: text("summary"),
   keyPoints: jsonb("key_points").$type<string[]>().default([]),
   rawText: text("raw_text"),
+  status: text("status").default("active").notNull(),
 });
 
 export const config = pgTable("config", {

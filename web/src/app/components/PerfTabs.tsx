@@ -1,6 +1,3 @@
-"use client";
-import { useState } from "react";
-
 export interface WindowStats {
   cost: number;
   conversions: number;
@@ -9,71 +6,67 @@ export interface WindowStats {
   impressions: number;
 }
 
-interface PerfTabsProps {
-  stats7d: WindowStats;
-  stats30d: WindowStats;
-  statsMtd: WindowStats;
-  currency: string;
-}
-
 function fmt(n: number, decimals = 0) {
   return n.toLocaleString(undefined, { maximumFractionDigits: decimals });
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Row({ label, v7, v30, vMtd }: { label: string; v7: string; v30: string; vMtd: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
-      <span className="text-base font-semibold text-zinc-900 dark:text-zinc-50">{value}</span>
-    </div>
+    <tr className="border-b border-zinc-100 dark:border-zinc-800 last:border-0">
+      <td className="py-2 pr-4 text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap">{label}</td>
+      <td className="py-2 px-3 text-sm font-medium text-zinc-900 dark:text-zinc-100 text-right">{v7}</td>
+      <td className="py-2 px-3 text-sm font-semibold text-indigo-700 dark:text-indigo-400 text-right">{v30}</td>
+      <td className="py-2 pl-3 text-sm font-medium text-zinc-900 dark:text-zinc-100 text-right">{vMtd}</td>
+    </tr>
   );
 }
 
-function StatsGrid({ s, currency }: { s: WindowStats; currency: string }) {
-  const roas = s.cost > 0 ? (s.conversionValue / s.cost).toFixed(2) + "x" : "—";
-  const cpa = s.conversions > 0 ? currency + fmt(s.cost / s.conversions, 0) : "—";
-  const ctr = s.impressions > 0 ? ((s.clicks / s.impressions) * 100).toFixed(2) + "%" : "—";
-  const cvr = s.clicks > 0 ? ((s.conversions / s.clicks) * 100).toFixed(2) + "%" : "—";
-  const avgCpc = s.clicks > 0 ? currency + fmt(s.cost / s.clicks, 0) : "—";
-  return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-5 pt-4">
-      <Metric label="Spend" value={currency + fmt(s.cost)} />
-      <Metric label="Conversions" value={fmt(s.conversions, 1)} />
-      <Metric label="Conv. Value" value={currency + fmt(s.conversionValue)} />
-      <Metric label="ROAS" value={roas} />
-      <Metric label="CPA" value={cpa} />
-      <Metric label="Clicks" value={fmt(s.clicks)} />
-      <Metric label="Impressions" value={fmt(s.impressions)} />
-      <Metric label="CTR" value={ctr} />
-      <Metric label="CVR" value={cvr} />
-      <Metric label="Avg CPC" value={avgCpc} />
-    </div>
-  );
+function calc(s: WindowStats, currency: string) {
+  return {
+    spend: currency + fmt(s.cost),
+    conv: fmt(s.conversions, 1),
+    convVal: currency + fmt(s.conversionValue),
+    roas: s.cost > 0 ? (s.conversionValue / s.cost).toFixed(2) + "x" : "—",
+    cpa: s.conversions > 0 ? currency + fmt(s.cost / s.conversions, 0) : "—",
+    clicks: fmt(s.clicks),
+    impr: fmt(s.impressions),
+    ctr: s.impressions > 0 ? ((s.clicks / s.impressions) * 100).toFixed(2) + "%" : "—",
+    cvr: s.clicks > 0 ? ((s.conversions / s.clicks) * 100).toFixed(2) + "%" : "—",
+    cpc: s.clicks > 0 ? currency + fmt(s.cost / s.clicks, 0) : "—",
+  };
 }
 
-const TABS = ["7 Days", "30 Days", "Month to Date"] as const;
+export function PerfTabs({ stats7d, stats30d, statsMtd, currency }: {
+  stats7d: WindowStats; stats30d: WindowStats; statsMtd: WindowStats; currency: string;
+}) {
+  const d7 = calc(stats7d, currency);
+  const d30 = calc(stats30d, currency);
+  const mtd = calc(statsMtd, currency);
 
-export function PerfTabs({ stats7d, stats30d, statsMtd, currency }: PerfTabsProps) {
-  const [active, setActive] = useState<(typeof TABS)[number]>("30 Days");
-  const stats = active === "7 Days" ? stats7d : active === "30 Days" ? stats30d : statsMtd;
   return (
-    <div>
-      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setActive(t)}
-            className={`px-3 py-2 text-sm font-medium transition-colors ${
-              active === t
-                ? "border-b-2 border-indigo-500 text-indigo-600 dark:text-indigo-400"
-                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-      <StatsGrid s={stats} currency={currency} />
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-zinc-200 dark:border-zinc-700">
+            <th className="pb-2 pr-4 text-left text-xs text-zinc-400 font-normal">Metric</th>
+            <th className="pb-2 px-3 text-right text-xs font-semibold text-zinc-500">7 Days</th>
+            <th className="pb-2 px-3 text-right text-xs font-semibold text-indigo-600 dark:text-indigo-400">30 Days</th>
+            <th className="pb-2 pl-3 text-right text-xs font-semibold text-zinc-500">Month to Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          <Row label="Spend"       v7={d7.spend}   v30={d30.spend}   vMtd={mtd.spend} />
+          <Row label="Conversions" v7={d7.conv}    v30={d30.conv}    vMtd={mtd.conv} />
+          <Row label="Conv. Value" v7={d7.convVal} v30={d30.convVal} vMtd={mtd.convVal} />
+          <Row label="ROAS"        v7={d7.roas}    v30={d30.roas}    vMtd={mtd.roas} />
+          <Row label="CPA"         v7={d7.cpa}     v30={d30.cpa}     vMtd={mtd.cpa} />
+          <Row label="Clicks"      v7={d7.clicks}  v30={d30.clicks}  vMtd={mtd.clicks} />
+          <Row label="Impressions" v7={d7.impr}    v30={d30.impr}    vMtd={mtd.impr} />
+          <Row label="CTR"         v7={d7.ctr}     v30={d30.ctr}     vMtd={mtd.ctr} />
+          <Row label="CVR"         v7={d7.cvr}     v30={d30.cvr}     vMtd={mtd.cvr} />
+          <Row label="Avg CPC"     v7={d7.cpc}     v30={d30.cpc}     vMtd={mtd.cpc} />
+        </tbody>
+      </table>
     </div>
   );
 }

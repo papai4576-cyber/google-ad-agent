@@ -60,6 +60,33 @@ export async function PUT(
   }
 }
 
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  if (!db) {
+    return NextResponse.json({ ok: false, error: "DATABASE_URL not configured" }, { status: 500 });
+  }
+  try {
+    const { id } = await params;
+    const body = (await req.json()) as { status: string };
+    if (!["active", "staged", "rejected"].includes(body.status)) {
+      return NextResponse.json({ ok: false, error: "Invalid status" }, { status: 400 });
+    }
+    const updated = await db
+      .update(brainEntries)
+      .set({ status: body.status })
+      .where(eq(brainEntries.id, id))
+      .returning();
+    if (updated.length === 0) {
+      return NextResponse.json({ ok: false, error: "Entry not found" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, entry: updated[0] });
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: String(err) }, { status: 400 });
+  }
+}
+
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
