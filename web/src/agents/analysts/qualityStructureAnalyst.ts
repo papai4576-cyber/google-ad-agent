@@ -55,7 +55,7 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
       "concrete about the restructure: name the split, the consolidation, or the ad to add. For extension gaps, propose CONCRETE " +
       "starting copy: 4-6 sitelink texts, 6-8 callouts, or 1-2 structured-snippet headers+values — tailored to the campaign's " +
       "offering, within Google length limits (sitelink text <= 25 chars).",
-    brainCategories: ["structure", "copy", "landing_page"],
+    brainCategories: ["structure", "copy", "landing_page", "brand"],
     brainLimit: 4,
     data,
     formatDataForPrompt: (d) => {
@@ -218,24 +218,34 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
   }
 
   const ags = data.adGroups.slice().sort((a, b) => (Number(b.costMicros) || 0) - (Number(a.costMicros) || 0));
+  let understaffedCount = 0;
+  const understaffedNames = new Set<string>(); // dedup by name (same ag name in multiple campaigns)
   for (const ag of ags) {
     const kwc = (kwByAg[ag.adGroupId] || []).length;
     const adc = (adsByAg[ag.adGroupId] || []).length;
     const tgt = { type: "adgroup" as const, id: String(ag.adGroupId), name: ag.adGroupName };
+    const agSpend = micros(ag.costMicros);
 
     if (adc < cfg.min_active_ads) {
+      if (understaffedCount >= 5) continue; // cap at 5 to avoid flooding
+      if (understaffedNames.has(ag.adGroupName)) continue; // skip same-name ag in another campaign
+      understaffedNames.add(ag.adGroupName);
+      understaffedCount++;
+      const zeroAds = adc === 0;
       out.push({
         id: `structure-understaffed-ag-${ag.adGroupId}`,
         category: "structure",
-        severity: "P2",
-        magnitude: "medium",
+        severity: zeroAds ? "P1" : "P2",
+        magnitude: zeroAds ? "high" : "medium",
         confidence: "high",
         effort: "easy",
         metric: "CTR",
         direction: "up",
         target: tgt,
-        hint: "Ad group is below the 2-active-ad safety rail — add at least one more responsive search ad so Google can rotate and test.",
-        evidence: [`${adc} active ads`, `${kwc} keywords`],
+        hint: zeroAds
+          ? `Ad group "${ag.adGroupName}" has NO active ads — Google cannot show anything from this ad group. Add at least 2 responsive search ads immediately.`
+          : `Ad group "${ag.adGroupName}" has only 1 active ad — below the 2-active-ad safety rail. Add at least one more responsive search ad so Google can rotate and test copy.`,
+        evidence: [`${adc} active ads (need ${cfg.min_active_ads})`, `${kwc} keywords`, `spend ${cur}${agSpend.toFixed(0)}`],
       });
     }
     if (kwc > cfg.max_keywords_per_adgroup) {
@@ -288,6 +298,8 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
   if (data.extensions.length === 0) {
     const top = data.campaigns.slice().sort((a, b) => (Number(b.costMicros) || 0) - (Number(a.costMicros) || 0))[0];
     if (top) {
+      const topSpend = micros(top.costMicros);
+      const topCtr = ((Number(top.ctr) || 0) * 100).toFixed(2);
       out.push({
         id: "extension-no-extensions-account",
         category: "extensions",
@@ -298,8 +310,8 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
         metric: "CTR",
         direction: "up",
         target: { type: "campaign", id: String(top.campaignId), name: top.campaignName },
-        hint: "No extensions found anywhere in the account — add sitelinks, callouts and structured snippets to the top campaigns; the cheapest CTR lift available.",
-        evidence: ["0 extensions across all campaigns"],
+        hint: "No extensions found anywhere in the account — add sitelinks, callouts and structured snippets to the top campaigns; the cheapest CTR lift available. Propose 4-6 specific Baidyanath sitelinks for this campaign.",
+        evidence: ["0 extensions across all campaigns", `top campaign spend ${cur}${topSpend.toFixed(0)}`, `ctr ${topCtr}%`],
       });
     }
   } else {
@@ -310,6 +322,8 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
       (c[e.type] = c[e.type] || []).push(e);
     }
 
+    const isPMax = (c: CampaignRow) => String(c.channelType || "").includes("PERFORMANCE_MAX");
+
     const camps = data.campaigns.slice().sort((a, b) => (Number(b.costMicros) || 0) - (Number(a.costMicros) || 0));
     for (const c of camps) {
       const spend = micros(c.costMicros);
@@ -318,6 +332,11 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
       const n = (t: string) => (cov[t] || []).length;
       const big = spend > cfg.ext_high_spend;
       const tgt = { type: "campaign" as const, id: String(c.campaignId), name: c.campaignName };
+      const ctr = ((Number(c.ctr) || 0) * 100).toFixed(2);
+      const impr = Number(c.impressions) || 0;
+      const conv = Number(c.conversions) || 0;
+      const pmax = isPMax(c);
+      const perfCtx = `impr=${impr.toLocaleString()} ctr=${ctr}% conv=${conv}`;
 
       if (n("SITELINK") === 0) {
         out.push({
@@ -330,8 +349,10 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           metric: "CTR",
           direction: "up",
           target: tgt,
-          hint: "No sitelinks — the single biggest extension CTR lift. Propose 4-6 concrete sitelink texts relevant to this campaign.",
-          evidence: ["0 sitelinks", String(c.channelType), `spend ${cur}${spend.toFixed(0)}`],
+          hint: pmax
+            ? `No sitelinks on Performance Max campaign "${c.campaignName}". Add asset-level sitelinks via Google Ads → Campaigns → Assets. Propose 4-6 specific Baidyanath product sitelinks (e.g. product category, offer, bestseller) tailored to this campaign.`
+            : `No sitelinks on "${c.campaignName}" — the single biggest CTR lift for Search. Propose 4-6 specific Baidyanath sitelinks tailored to what this campaign promotes. Each must be ≤25 chars.`,
+          evidence: ["0 sitelinks", `channel=${c.channelType || "SEARCH"}`, `spend ${cur}${spend.toFixed(0)}`, perfCtx],
         });
       } else if (n("SITELINK") < 4) {
         out.push({
@@ -344,8 +365,8 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           metric: "CTR",
           direction: "up",
           target: tgt,
-          hint: "Below the recommended 4+ sitelinks — propose additional sitelink texts.",
-          evidence: [`${n("SITELINK")} sitelinks`, `spend ${cur}${spend.toFixed(0)}`],
+          hint: `Only ${n("SITELINK")} sitelinks on "${c.campaignName}" — propose additional Baidyanath-specific sitelink texts to reach 4+ (each ≤25 chars).`,
+          evidence: [`${n("SITELINK")} sitelinks (need 4+)`, `spend ${cur}${spend.toFixed(0)}`, perfCtx],
         });
       }
 
@@ -360,12 +381,12 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           metric: "CTR",
           direction: "up",
           target: tgt,
-          hint: "No callouts — propose 6-8 concise callout phrases (benefits, trust signals).",
-          evidence: ["0 callouts", `spend ${cur}${spend.toFixed(0)}`],
+          hint: `No callouts on "${c.campaignName}" — propose 6-8 Baidyanath-specific callout phrases (trust signals, benefits, USPs) each ≤25 chars.`,
+          evidence: ["0 callouts", `spend ${cur}${spend.toFixed(0)}`, perfCtx],
         });
       }
 
-      if (n("STRUCTURED_SNIPPET") === 0 && big) {
+      if (n("STRUCTURED_SNIPPET") === 0 && big && !pmax) {
         out.push({
           id: `extension-no-snippets-${c.campaignId}`,
           category: "extensions",
@@ -376,8 +397,8 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           metric: "CTR",
           direction: "up",
           target: tgt,
-          hint: "No structured snippets — propose 1-2 snippet headers + values for the offering.",
-          evidence: ["0 structured snippets", `spend ${cur}${spend.toFixed(0)}`],
+          hint: `No structured snippets on "${c.campaignName}" — propose 1-2 snippet header + values relevant to Baidyanath's product range (e.g. header "Products:" with values like "Chyawanprash, Triphala, Shilajit, Honey").`,
+          evidence: ["0 structured snippets", `spend ${cur}${spend.toFixed(0)}`, perfCtx],
         });
       }
     }
@@ -408,5 +429,11 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
     }
   }
 
-  return out;
+  // Deduplicate by id (guards against duplicate rows in the DB snapshot).
+  const seen = new Set<string>();
+  return out.filter((c) => {
+    if (seen.has(c.id)) return false;
+    seen.add(c.id);
+    return true;
+  });
 }

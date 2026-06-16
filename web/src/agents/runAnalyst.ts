@@ -205,7 +205,11 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
       title: String(p.title ?? c.hint ?? c.id).slice(0, 200),
       what: String(p.what ?? c.hint ?? fallbackWhy).slice(0, 1000),
       why: String(p.why ?? fallbackWhy).slice(0, 1000),
-      action: String(p.action ?? c.hint ?? "").slice(0, 1000),
+      action: (Array.isArray(p.action)
+        ? (p.action as unknown[]).join("\n")
+        : typeof p.action === "object" && p.action !== null
+          ? JSON.stringify(p.action)
+          : String(p.action ?? c.hint ?? "")).slice(0, 1000),
       target: c.target,
       estimated_impact: {
         metric: String(c.metric ?? "spend").slice(0, 32),

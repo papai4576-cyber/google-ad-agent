@@ -118,6 +118,9 @@ function detectPerformanceBudget(data: PerformanceBudgetData, ctx: { targets: { 
     const ratio = total / monthlyBudget;
     if (ratio < 1 - cfg.pacing_tolerance || ratio > 1 + cfg.pacing_tolerance) {
       const dir = ratio < 1 ? "under-pacing" : "over-pacing";
+      // Use top-spending campaign as representative target (account-level findings must point to a real entity).
+      const topCampaign = data.campaigns.slice().sort((a, b) => (Number(b.costMicros) || 0) - (Number(a.costMicros) || 0))[0];
+      const topSpend = topCampaign ? micros(topCampaign.costMicros) : 0;
       out.push({
         id: "pacing-account",
         category: "performance",
@@ -127,13 +130,16 @@ function detectPerformanceBudget(data: PerformanceBudgetData, ctx: { targets: { 
         effort: "medium",
         metric: "spend",
         direction: ratio < 1 ? "up" : "down",
-        target: { type: "campaign", id: "account", name: "Account (all campaigns)" },
-        hint: `Account is ${dir}: spend ${cur}${total.toFixed(0)} vs monthly target ${cur}${monthlyBudget.toFixed(0)}.`,
+        target: topCampaign
+          ? { type: "campaign" as const, id: String(topCampaign.campaignId), name: topCampaign.campaignName }
+          : { type: "campaign" as const, id: "account", name: "Account (all campaigns)" },
+        hint: `Account is ${dir}: total spend ${cur}${total.toFixed(0)} is ${(ratio * 100).toFixed(0)}% of monthly target ${cur}${monthlyBudget.toFixed(0)}. Top spender is "${topCampaign?.campaignName || "unknown"}" (${cur}${topSpend.toFixed(0)}). Recommend adjusting campaign budgets proportionally to bring account spend to target.`,
         evidence: [
-          `total spend ${cur}${total.toFixed(0)}`,
+          `account total spend ${cur}${total.toFixed(0)}`,
           `monthly target ${cur}${monthlyBudget.toFixed(0)}`,
-          `ratio ${(ratio * 100).toFixed(0)}% of target`,
-        ],
+          `pacing ratio ${(ratio * 100).toFixed(0)}%`,
+          topCampaign ? `top spender "${topCampaign.campaignName}" ${cur}${topSpend.toFixed(0)}` : "",
+        ].filter(Boolean),
       });
     }
   }

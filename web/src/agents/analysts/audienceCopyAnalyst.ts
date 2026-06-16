@@ -55,8 +55,12 @@ export async function buildAudienceCopyAnalystSpec(): Promise<RuleBasedAnalystSp
     instructions:
       "For audience findings, explain exactly which audience type to add (RLSA, Customer Match, in-market segment) and in which mode " +
       "(observation vs targeting), framed as observation-mode tests since Raw_Audiences data is not yet collected. " +
-      "For copy findings, write 3-5 new headlines (max 30 chars each) and 2 new descriptions (max 90 chars each) " +
-      "that fix the specific weakness detected, in the `action` field as bullet points.",
+      "For copy findings: the EVIDENCE contains the ACTUAL CURRENT HEADLINES. You MUST write 3-5 replacement headlines " +
+      "(max 30 chars each) that are SPECIFIC to Baidyanath Ayurvedic products — NEVER write generic 'Buy Now', 'Shop Online', " +
+      "'Learn More'. Good Baidyanath headlines: 'Buy Chyawanprash Online', '100% Ayurvedic Formula', 'Since 1917', " +
+      "'Trusted by Millions', 'Shop Baidyanath Now'. Also write 2 descriptions (max 90 chars each). " +
+      "Return `action` as a PLAIN TEXT string (NOT JSON, NOT an array), formatted exactly like:\n" +
+      "Headlines: • [headline1] • [headline2] • [headline3] Descriptions: • [desc1] • [desc2]",
     brainCategories: ["audience", "copy", "brand"],
     brainLimit: 5,
     data: { campaigns, adGroups, ads, brandKeywords },

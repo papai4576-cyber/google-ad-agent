@@ -17,7 +17,6 @@ export interface ActionMeta {
 }
 
 const TYPE_MAP: Record<string, string> = {
-  [AGENTS.QUALITY_STRUCTURE]: "fix_quality_score",
   [AGENTS.AUDIENCE_COPY]: "update_copy",
   [AGENTS.SEARCH_INTELLIGENCE]: "add_keywords",
   [AGENTS.LANDING_PAGE]: "fix_landing_page",
@@ -37,7 +36,21 @@ export function deriveActionMeta(f: SynthFinding): ActionMeta {
   if (agent === AGENTS.PERFORMANCE_BUDGET) {
     if (id.startsWith("budget-locked-")) return { action_category: "auto", action_type: "increase_budget" };
     if (id.startsWith("idle-budget-")) return { action_category: "manual", action_type: "reallocate_budget" };
+    if (id.startsWith("pacing-")) return { action_category: "manual", action_type: "reallocate_budget" };
+    if (id.startsWith("rank-locked-")) return { action_category: "manual", action_type: "adjust_bid" };
+    if (id.startsWith("low-ctr-")) return { action_category: "manual", action_type: "update_copy" };
+    if (id.startsWith("troas-no-value-") || id.startsWith("no-conv-") || id.startsWith("no-value-") ||
+        id.startsWith("high-cvr-") || id.startsWith("low-cvr-")) {
+      return { action_category: "manual", action_type: "fix_conversion_tracking" };
+    }
     return { action_category: "manual", action_type: "change_bid_strategy" };
+  }
+
+  if (agent === AGENTS.QUALITY_STRUCTURE) {
+    if (id.startsWith("extension-")) return { action_category: "manual", action_type: "add_extensions" };
+    if (id.startsWith("low-qs-") || id.startsWith("no-qs-spend-")) return { action_category: "manual", action_type: "fix_quality_score" };
+    if (id.startsWith("structure-")) return { action_category: "manual", action_type: "restructure" };
+    return { action_category: "manual", action_type: "fix_quality_score" };
   }
 
   if (agent === AGENTS.SYNTHESIS_PATTERN) {
