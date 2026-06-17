@@ -16,3 +16,4 @@ node_modules/
 
 # clasp config (root-level)
 .clasp.json
+.vercel

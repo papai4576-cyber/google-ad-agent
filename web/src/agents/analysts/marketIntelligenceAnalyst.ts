@@ -55,7 +55,9 @@ export async function buildMarketIntelligenceAnalystSpec(): Promise<AnalystSpec<
       "appropriately.\n\n" +
       'Honestly flag the data limitation: auction_insight_view is not yet collected; richer share-of-voice findings ' +
       "would require it.\n\n" +
-      'Use category="competitive" or "general" or "keywords" as appropriate. target.type = "campaign" or "adgroup".',
+      'Use category="competitive" or "general" or "keywords" as appropriate. target.type = "campaign" or "adgroup". ' +
+      "This analyst has no deterministic backstop checking your output — if you cannot name a specific campaign, ad " +
+      "group, or query WITH at least 2 numeric data points, do not produce that finding.",
     brainCategories: ["competitive", "brand", "general", "pmax"],
     brainLimit: 5,
     maxTokens: 3500,

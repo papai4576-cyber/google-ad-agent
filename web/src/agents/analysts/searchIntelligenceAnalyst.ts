@@ -65,7 +65,10 @@ export async function buildSearchIntelligenceAnalystSpec(): Promise<AnalystSpec<
       "one; (3) cross-campaign leakage — brand terms hitting non-brand or vice versa, cite impression count; (4) theme-level " +
       "CVR outliers converting at >2x average — recommend budget reallocation; (5) ad-group name vs dominant-query mismatch " +
       '— cite the top 2-3 mismatched queries. category="structure" or "keywords", target.type="campaign" or "adgroup".\n\n' +
-      "If a section has no real candidates, return zero findings for that section rather than inventing one.",
+      "If a section has no real candidates, return zero findings for that section rather than inventing one. " +
+      "This analyst has no deterministic backstop checking your output — if you cannot name a specific search term, " +
+      "keyword, or ad group WITH at least 2 numeric data points (impressions, clicks, cost, or conversions), do not " +
+      "produce that finding.",
     brainCategories: ["keywords", "structure", "audience"],
     brainLimit: 5,
     maxTokens: 4000,

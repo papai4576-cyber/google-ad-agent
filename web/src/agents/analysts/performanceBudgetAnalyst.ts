@@ -59,7 +59,10 @@ export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnal
     instructions:
       "Explain each flagged issue clearly with the specific numbers from its evidence. Every action must be concrete — " +
       "no generic advice. Respect the safety rails: never recommend a single bid change >30% or a budget shift >20% per run. " +
-      "Prefer transitional bid strategies (Maximize Conversions / eCPC) when conversion volume is too low for smart bidding.",
+      "Prefer transitional bid strategies (Maximize Conversions / eCPC) when conversion volume is too low for smart bidding. " +
+      "If the evidence for a budget-locked candidate also shows this campaign's ROAS or CPA is missing its target, do not " +
+      "recommend increasing the budget — say so explicitly and recommend fixing efficiency first (a downstream business-rule " +
+      "check will also catch this, but flag it yourself too).",
     brainCategories: ["bidding", "scaling", "general"],
     brainLimit: 5,
     data: { campaigns },

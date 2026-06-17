@@ -22,8 +22,12 @@ import { actionPlan } from "@/db/schema";
 import type { SynthFinding } from "../schema";
 import { Dedup, type MergeLogEntry } from "./dedup";
 import { detectCrossAgentPatterns } from "./crossAgentPatterns";
+import { applyBusinessRules, type BusinessRuleStats } from "./businessRules";
+import { runRecommendationValidator } from "../analysts/recommendationValidatorAgent";
 import { ImpactScorer } from "./impactScorer";
 import { formatActionPlan, type ActionPlanRow } from "./planFormatter";
+
+const EMPTY_BUSINESS_RULE_STATS: BusinessRuleStats = { roasGated: 0, rankGated: 0, confidenceCapped: 0, insufficientDataCapped: 0 };
 
 export interface SynthesisResult {
   runDate: string;
@@ -39,6 +43,9 @@ export interface SynthesisResult {
   written: number;
   cleared: number;
   planRows: ActionPlanRow[];
+  businessRuleStats: BusinessRuleStats;
+  validatorTokens: number;
+  validatorFlagged: number;
 }
 
 export async function runSynthesis(findings: SynthFinding[], runDate: string): Promise<SynthesisResult> {
@@ -58,6 +65,9 @@ export async function runSynthesis(findings: SynthFinding[], runDate: string): P
       written: 0,
       cleared,
       planRows: [],
+      businessRuleStats: EMPTY_BUSINESS_RULE_STATS,
+      validatorTokens: 0,
+      validatorFlagged: 0,
     };
   }
 
@@ -68,8 +78,14 @@ export async function runSynthesis(findings: SynthFinding[], runDate: string): P
   const patterns = detectCrossAgentPatterns(dedup.deduped, runDate);
   const withPatterns = [...dedup.deduped, ...patterns];
 
+  // 2b. Business rules — deterministic ROAS/rank gates, evidence-density floor, insufficient-data cap. No LLM.
+  const { findings: gated, stats: businessRuleStats } = await applyBusinessRules(withPatterns);
+
+  // 2c. Recommendation validator agent — one batched Groq call, judgment-based annotation. Non-fatal on failure.
+  const { findings: validated, tokenCount: validatorTokens } = await runRecommendationValidator(gated, runDate);
+
   // 3. Score + assign priority.
-  const { scored, stats } = ImpactScorer.run(withPatterns);
+  const { scored, stats } = ImpactScorer.run(validated);
 
   // 4. Format + write action_plan rows.
   const planRows = formatActionPlan(scored, runDate);
@@ -94,6 +110,9 @@ export async function runSynthesis(findings: SynthFinding[], runDate: string): P
     written,
     cleared,
     planRows,
+    businessRuleStats,
+    validatorTokens,
+    validatorFlagged: validated.filter((f) => (f.validation_flags || []).length > 0).length,
   };
 }
 

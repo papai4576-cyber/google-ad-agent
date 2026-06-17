@@ -143,10 +143,16 @@ async function main() {
   for (const m of result.mergeLog.slice(0, 5)) {
     console.log(`  merged ${m.merged_finding_ids.join(", ")} -> ${m.primary_finding_id}`);
   }
+  const br = result.businessRuleStats;
+  console.log(
+    `Business rules: ${br.roasGated} ROAS-gated, ${br.rankGated} rank-gated, ${br.confidenceCapped} confidence-capped, ${br.insufficientDataCapped} insufficient-data-capped.`
+  );
+  console.log(`Recommendation validator: ${result.validatorFlagged} flagged (tokens=${result.validatorTokens}).`);
   console.log(`Score: P1=${result.p1}, P2=${result.p2}, P3=${result.p3} (${result.severityOverrides} severity overrides).`);
   console.log(`Action plan: wrote ${result.written} rows (cleared ${result.cleared} old rows for ${runDate}).`);
   console.log("===========================================");
 
+  totalTokens += result.validatorTokens;
   const summary =
     `${synthFindings.length} raw findings -> ${result.written} action items ` +
     `(P1=${result.p1}, P2=${result.p2}, P3=${result.p3}), ${totalTokens} tokens.`;
@@ -203,6 +209,8 @@ async function writeFindings(synthFindings: SynthFinding[], runDate: string): Pr
     effort: f.effort,
     evidence: f.evidence,
     brainSources: f.brain_sources,
+    missingData: f.missing_data ?? [],
+    alternativeExplanations: f.alternative_explanations ?? [],
     status: "new",
   }));
 

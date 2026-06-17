@@ -220,6 +220,10 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
       effort: c.effort,
       evidence: Array.isArray(c.evidence) ? c.evidence.slice(0, 8).map((e) => String(e).slice(0, 300)) : [],
       brain_sources: Array.isArray(p.brain_sources) ? (p.brain_sources as unknown[]).slice(0, 8).map((e) => String(e).slice(0, 32)) : [],
+      missing_data: Array.isArray(p.missing_data) ? (p.missing_data as unknown[]).slice(0, 6).map((e) => String(e).slice(0, 200)) : [],
+      alternative_explanations: Array.isArray(p.alternative_explanations)
+        ? (p.alternative_explanations as unknown[]).slice(0, 4).map((e) => String(e).slice(0, 200))
+        : [],
     };
     const errs = validateFinding(f);
     if (errs.length) {
@@ -275,7 +279,9 @@ export function buildSystemPrompt(persona: string, instructionsForDomain: string
     '      "confidence": "high | medium | low",\n' +
     '      "effort":     "easy | medium | hard",\n' +
     '      "evidence":   ["data point 1", "data point 2"],\n' +
-    '      "brain_sources": ["brain_001", "brain_042"]    // ids from the BRAIN section, or [] if none used\n' +
+    '      "brain_sources": ["brain_001", "brain_042"],   // ids from the BRAIN section, or [] if none used\n' +
+    '      "missing_data": ["data that would make this more defensible"],   // [] if confidence is high\n' +
+    '      "alternative_explanations": ["a plausible alternative cause"]    // [] if none is plausible\n' +
     "    }\n" +
     "  ],\n" +
     '  "summary": "one-sentence overview of the run"\n' +
@@ -309,7 +315,9 @@ export function buildSystemPrompt(persona: string, instructionsForDomain: string
     "  - target.id MUST be a real id from the DATA section. target.name MUST be the matching name.\n" +
     '  - If you cite a brain entry, put its id (e.g. "brain_006") in brain_sources.\n' +
     "  - Produce AT MOST 8 findings per run. Surface only the most actionable.\n" +
-    "  - If nothing is wrong, return findings:[] and an honest summary.\n"
+    "  - If nothing is wrong, return findings:[] and an honest summary.\n" +
+    "  - When confidence is \"medium\" or \"low\", populate missing_data with what would raise it, and " +
+    "alternative_explanations with any plausible alternative cause you considered and didn't rule out.\n"
   );
 }
 
@@ -323,7 +331,7 @@ export function buildRuleSystemPrompt(persona: string, instructions: string): st
     "Output STRICT JSON:\n" +
     "{\n" +
     '  "findings": [\n' +
-    '    { "id": "<echo the given id EXACTLY>", "title": "<=100 chars", "what": "what is wrong / the opportunity", "why": "why it matters, quantified", "action": "exact change for a human implementer", "brain_sources": ["brain_001"] }\n' +
+    '    { "id": "<echo the given id EXACTLY>", "title": "<=100 chars", "what": "what is wrong / the opportunity", "why": "why it matters, quantified", "action": "exact change for a human implementer", "brain_sources": ["brain_001"], "missing_data": [], "alternative_explanations": [] }\n' +
     "  ],\n" +
     '  "summary": "one sentence"\n' +
     "}\n\n" +
@@ -339,7 +347,8 @@ export function buildRuleSystemPrompt(persona: string, instructions: string): st
     '    GOOD: "Campaign \\"Baidyanath Chyawanprash\\" has CPA ₹1,840 — 9.2x above the ₹200 target."\n' +
     "  - In `why`: embed the ACTUAL numbers from the `data` line — spend, conv, CPA, ROAS, CTR, IS%.\n" +
     "  - In `action`: state the specific value to change TO (e.g. 'reduce daily budget from ₹3,500 to ₹2,800').\n" +
-    "  - NEVER write 'the campaign', 'this campaign', 'the keyword' — always use its name.\n"
+    "  - NEVER write 'the campaign', 'this campaign', 'the keyword' — always use its name.\n" +
+    "  - If the given confidence for an issue is \"medium\" or \"low\", populate missing_data with what would raise it.\n"
   );
 }
 

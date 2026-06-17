@@ -27,6 +27,9 @@ export interface ActionPlanRow {
   targetType: string;
   targetId: string;
   targetName: string;
+  missingData: string[];
+  alternativeExplanations: string[];
+  validationFlags: string[];
   score: number;
   status: "pending";
 }
@@ -60,6 +63,9 @@ export function formatActionPlan(scored: SynthFinding[], runDate: string): Actio
       targetType: f.target.type,
       targetId: f.target.id,
       targetName: f.target.name,
+      missingData: f.missing_data ?? [],
+      alternativeExplanations: f.alternative_explanations ?? [],
+      validationFlags: f.validation_flags ?? [],
       score: Number(f.score) || 0,
       status: "pending",
     };

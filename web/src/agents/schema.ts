@@ -78,6 +78,10 @@ export interface Finding {
   effort: Effort;
   evidence: string[];
   brain_sources: string[];
+  /** Optional — data that would make this finding more defensible if collected. Populated by analysts or the recommendation validator. */
+  missing_data?: string[];
+  /** Optional — plausible alternative causes for the same observation. Populated by analysts or the recommendation validator. */
+  alternative_explanations?: string[];
 }
 
 /** A finding that has entered the synthesis pipeline (agent/run metadata attached). */
@@ -89,6 +93,8 @@ export interface SynthFinding extends Finding {
   score?: number;
   /** Set by ImpactScorer; absent before scoring. */
   priority?: Severity;
+  /** Synthesis-stage bookkeeping — set by businessRules.ts / recommendationValidatorAgent.ts. Not analyst output. */
+  validation_flags?: string[];
 }
 
 export interface AnalystOutput {
@@ -154,6 +160,8 @@ interface RawFinding {
   effort?: unknown;
   evidence?: unknown;
   brain_sources?: unknown;
+  missing_data?: unknown;
+  alternative_explanations?: unknown;
 }
 
 export function validateFinding(f: unknown): string[] {
@@ -204,5 +212,9 @@ export function normalizeFinding(f: RawFinding): Finding {
     effort: f.effort as Effort,
     evidence: Array.isArray(f.evidence) ? f.evidence.slice(0, 8).map((e) => String(e).slice(0, 300)) : [],
     brain_sources: Array.isArray(f.brain_sources) ? f.brain_sources.slice(0, 8).map((e) => String(e).slice(0, 32)) : [],
+    missing_data: Array.isArray(f.missing_data) ? f.missing_data.slice(0, 6).map((e) => String(e).slice(0, 200)) : [],
+    alternative_explanations: Array.isArray(f.alternative_explanations)
+      ? f.alternative_explanations.slice(0, 4).map((e) => String(e).slice(0, 200))
+      : [],
   };
 }

@@ -38,6 +38,9 @@ async function getRows(category: Category, priority: Priority, status: StatusFil
       targetName: actionPlan.targetName,
       score: actionPlan.score,
       status: actionPlan.status,
+      missingData: actionPlan.missingData,
+      alternativeExplanations: actionPlan.alternativeExplanations,
+      validationFlags: actionPlan.validationFlags,
       evidence: findings.evidence,
       impactMetric: findings.impactMetric,
       impactDirection: findings.impactDirection,
@@ -229,6 +232,9 @@ export default async function ActionPlanPage({
             const isDone = row.status === "approved" || row.status === "rejected";
             const evidence = (row.evidence as string[] | null) ?? [];
             const brainSources = (row.brainSources as string[] | null) ?? [];
+            const missingData = (row.missingData as string[] | null) ?? [];
+            const alternativeExplanations = (row.alternativeExplanations as string[] | null) ?? [];
+            const validationFlags = (row.validationFlags as string[] | null) ?? [];
 
             return (
               <div
@@ -249,6 +255,14 @@ export default async function ActionPlanPage({
                     <Chip label={row.actionCategory} color={row.actionCategory === "auto" ? "green" : row.actionCategory === "manual" ? "blue" : "zinc"} />
                     {row.confidence && <Chip label={`${row.confidence} confidence`} />}
                     {row.effort && <Chip label={`${row.effort} effort`} />}
+                    {validationFlags.length > 0 && (
+                      <span
+                        title={validationFlags.join(" · ")}
+                        className="rounded px-1.5 py-0.5 text-[11px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                      >
+                        ⚠ flagged
+                      </span>
+                    )}
                     <StatusDot status={row.status} />
                   </div>
                   {row.status === "pending" && <ApproveButtons planId={row.planId} />}
@@ -294,6 +308,32 @@ export default async function ActionPlanPage({
                         </li>
                       ))}
                     </ul>
+                  </div>
+                )}
+
+                {/* Missing data / alternative explanations */}
+                {(missingData.length > 0 || alternativeExplanations.length > 0) && (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {missingData.length > 0 && (
+                      <div className="rounded-lg border border-amber-100 dark:border-amber-900/40 px-3 py-2.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-amber-500 mb-1.5">Missing data</p>
+                        <ul className="space-y-1">
+                          {missingData.map((m, i) => (
+                            <li key={i} className="text-xs text-zinc-600 dark:text-zinc-400">{m}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {alternativeExplanations.length > 0 && (
+                      <div className="rounded-lg border border-zinc-100 dark:border-zinc-800 px-3 py-2.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">Alternative explanations</p>
+                        <ul className="space-y-1">
+                          {alternativeExplanations.map((a, i) => (
+                            <li key={i} className="text-xs text-zinc-600 dark:text-zinc-400">{a}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
 
