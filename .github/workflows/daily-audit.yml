@@ -1,9 +1,12 @@
 name: daily-audit
 
 on:
-  schedule:
-    # 06:00 UTC daily — after the Google Ads Script's collect run.
-    - cron: "0 6 * * *"
+  # Cron schedule paused while the provider-failover/findings pipeline is being
+  # stabilized — running manually via workflow_dispatch instead. Re-enable by
+  # uncommenting the schedule block below once satisfied with run quality.
+  # schedule:
+  #   # 06:00 UTC daily — after the Google Ads Script's collect run.
+  #   - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 jobs:
