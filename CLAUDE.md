@@ -59,12 +59,18 @@ Postgres (Supabase or Neon, free tier)                             │
    │  read + write                                                 │
    │                                                                │
 GitHub Actions (cron, free)  ──────────────────────────────────────┘
-   - "daily-audit" (once/day): rules engines → 6 consolidated
-       LLM Analysts (Groq) → dedup → cross-agent patterns →
-       impact scoring → action_category/action_type → action_plan
-       → optional Slack digest notification
+   - "daily-audit" (CRON CURRENTLY PAUSED — workflow_dispatch only, see
+       "Operational status" below; was 06:00 UTC daily): rules engines →
+       6 consolidated LLM Analysts (multi-provider, see below) → dedup →
+       cross-agent patterns → business-rules gate → recommendation
+       validator agent → impact scoring → action_category/action_type →
+       action_plan → optional Slack digest notification
    - "hourly-implementation" (hourly): derive pending_changes from
        newly approved 'auto' action_plan rows
+   - "weekly-brain-learning" (Mondays 07:00 UTC): autonomous Brain
+       Learning Agent — discovers candidate brain_entries from account
+       data, approved-findings feedback, and Groq compound-beta web
+       search; writes them status='staged' for human review at /brain
 
 Next.js Dashboard (Vercel, free) — password-gated
    - / (Overview)     — KPIs, budget pacing, 7d/30d/MTD charts
@@ -84,6 +90,32 @@ Google Ads Script (execute mode)         [kept from v1 — repointed]
 **Why Postgres:** real relational queries for the dashboard, `jsonb` for evidence/headlines/key_points, room for `pgvector` later for Brain semantic search.
 
 **Why no Slack reaction-polling:** the dashboard is the approval surface (buttons → `/api/approve`). Slack is now an optional one-way notification channel.
+
+---
+
+## Operational status (read this before assuming the cron is running)
+
+- **`daily-audit` schedule is currently PAUSED** (commented out in `.github/workflows/daily-audit.yml`, not deleted) — the user runs it manually via Actions → daily-audit → "Run workflow" while the pipeline below is being stabilized. Re-enable by uncommenting the `schedule:` block once satisfied with run quality. `hourly-implementation` and `weekly-brain-learning` are unaffected (still on their normal schedules).
+- This account is a **pilot** — if the findings-quality pipeline holds up, the user intends to **replicate this entire system for other Google Ads accounts**. Treat correctness and documentation discipline here as setting the template for that replication, not as one-off cleanup.
+
+---
+
+## Multi-provider LLM client (`web/src/agents/llm.ts`)
+
+`callLLM()` is no longer Groq-only. It builds a ranked provider list from whichever API keys are set and fails over automatically — a provider being at its daily ceiling, erroring, or returning unparseable output all trigger a fall-through to the next provider, not a thrown error (only throws if *every* configured provider fails):
+
+| Provider id(s) | Env var | Model | Notes |
+|---|---|---|---|
+| `groq_1`..`groq_4` | `GROQ_API_KEY`, `GROQ_API_KEY_2/_3/_4` | `llama-3.3-70b-versatile` | Primary. 100K tokens/day **per key** — multiple free Groq accounts each get an independent quota. Only `GROQ_API_KEY` is required; `_2/_3/_4` are optional extra accounts. |
+| `cerebras` | `CEREBRAS_API_KEY` | `zai-glm-4.7` (override: `CEREBRAS_MODEL`) | 1M tokens/day free tier, but only an **8,192-token context cap**, and this account's available models (`zai-glm-4.7`, `gpt-oss-120b`) intermittently emit a hidden chain-of-thought `reasoning` field before `content` — sent with `reasoning_effort: "none"` (verified live: drops `reasoning_tokens` to 0) plus a 1200-token safety-margin headroom. |
+| `openrouter` | `OPENROUTER_API_KEY` | `google/gemma-4-26b-a4b-it:free` (override: `OPENROUTER_MODEL`) | 50–1000 requests/day depending on credit purchased, 20 RPM. Free catalog rotates — `llama-3.3-70b-instruct:free` and `qwen3-next-80b-a3b-instruct:free` were both congested when last checked (June 2026); `nemotron-3-super-120b-a12b:free` is also a reasoning model. `gemma-4-26b-a4b-it:free` verified clean (no reasoning overhead). |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` (override: `GEMINI_MODEL`) | Not currently configured. OpenAI-compatible endpoint. |
+
+**Provider ordering**: Groq → Cerebras → OpenRouter → Gemini by default. For analysts that send large data tables (`largePrompt: true` on the `AnalystSpec` — currently `searchIntelligenceAnalyst`, `marketIntelligenceAnalyst`, `qualityStructureAnalyst`, and the recommendation validator agent), Cerebras is moved to *last* instead of second, since its 8K context cap is the most likely failure point for those prompts.
+
+**Token usage** is tracked per provider id (not per "groq") in `token_usage`, so each key/provider has its own independent daily ceiling — exhausting `groq_1` doesn't touch `groq_2`'s budget. Proactive ceiling override: `config.<PROVIDER_ID_UPPER>_DAILY_TOKEN_CEILING` (e.g. `GROQ_1_DAILY_TOKEN_CEILING`).
+
+GitHub Actions secrets needed for the cron to use the full provider list: `GROQ_API_KEY` (required) plus any of `GROQ_API_KEY_2/_3/_4`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` (all optional — unset ones are simply skipped, no error).
 
 ---
 
@@ -184,20 +216,21 @@ The Brain is what makes this system strategically intelligent rather than purely
 
 ---
 
-## Agent architecture — 14 agents (v1) → 6 Analysts (v2)
+## Agent architecture — 14 agents (v1) → 6 Analysts + 1 Recommendation Validator (v2)
 
-Each Analyst = one rules pass (if applicable) + **one** Groq call. Same universal findings schema, dedup, cross-agent patterns, and `ImpactScorer` formula carry over unchanged from v1 — port directly from `apps_script/agents/synthesis/DeduplicationAgent.js`, `ImpactScorer.js`, `apps_script/managers/SynthesisManager.js`.
+Each Analyst = one rules pass (if applicable) + **one** LLM call (multi-provider, see above). Same universal findings schema, dedup, cross-agent patterns, and `ImpactScorer` formula carry over from v1 — ported from `apps_script/agents/synthesis/DeduplicationAgent.js`, `ImpactScorer.js`, `apps_script/managers/SynthesisManager.js`. **v2 adds a synthesis-stage business-rules gate and a 7th agent (the Recommendation Validator) that v1 never had** — see "Synthesis pipeline v2 additions" below.
 
-| Analyst | Merges (v1 agents) | Pattern | Brain categories |
-|---|---|---|---|
-| **Performance & Budget Analyst** | PerformanceAnalyst, BidBudgetAnalyst, ConversionHealthChecker | rule-based, 1 LLM call | bidding, scaling, general |
-| **Quality & Structure Analyst** | QualityScoreInspector, AccountStructureReviewer, ExtensionAuditor | rule-based, 1 LLM call | structure, copy, landing_page |
-| **Audience & Copy Analyst** | AudienceAnalyst, AdCopyCritic | rule-based, 1 LLM call | audience, copy, brand |
-| **Search Intelligence Analyst** | KeywordMiner, NegativeKwHunter, SearchTermPatternAnalyzer | pure LLM, 1 call, structured multi-section output | keywords, structure, audience |
-| **Market Intelligence Analyst** | CompetitiveIntel, CategoryTrendSpotter | pure LLM, 1 call | competitive, brand, general, pmax |
-| **Landing Page Scorer** | LandingPageScorer (unchanged) | LLM + URL fetch | landing_page, copy |
+| Analyst | Merges (v1 agents) | Pattern | Brain categories | `largePrompt` |
+|---|---|---|---|---|
+| **Performance & Budget Analyst** | PerformanceAnalyst, BidBudgetAnalyst, ConversionHealthChecker | rule-based, 1 LLM call | bidding, scaling, general | no |
+| **Quality & Structure Analyst** | QualityScoreInspector, AccountStructureReviewer, ExtensionAuditor | rule-based, 1 LLM call | structure, copy, landing_page, brand | yes |
+| **Audience & Copy Analyst** | AudienceAnalyst, AdCopyCritic | rule-based, 1 LLM call | audience, copy, brand | no |
+| **Search Intelligence Analyst** | KeywordMiner, NegativeKwHunter, SearchTermPatternAnalyzer | pure LLM, 1 call, structured multi-section output | keywords, structure, audience | yes |
+| **Market Intelligence Analyst** | CompetitiveIntel, CategoryTrendSpotter | pure LLM, 1 call | competitive, brand, general, pmax | yes |
+| **Landing Page Scorer** | LandingPageScorer (unchanged) | LLM + URL fetch | landing_page, copy | no |
+| **Recommendation Validator** (NEW, v2 only — `web/src/agents/analysts/recommendationValidatorAgent.ts`) | none (v1 had no equivalent) | reviews *output*, doesn't produce new findings — 1 batched call over all surviving findings | n/a (doesn't query Brain) | yes |
 
-Result: **6 LLM calls/day** instead of 14, each with a richer prompt and bigger token budget per call (no 6-min ceiling), producing more specific `action` text.
+Result: **7 LLM calls/day** (was "6 instead of 14" before the validator was added), each with a richer prompt and bigger token budget per call (no 6-min ceiling), producing more specific `action` text.
 
 Each Analyst module follows:
 ```typescript
@@ -221,6 +254,34 @@ Port directly from `apps_script/` (load-bearing, validated logic):
 - The 3 cross-agent patterns from `SynthesisManager.js`
 - `_deriveActionMeta_()` from `apps_script/agents/synthesis/PlanFormatter.js` (action_category/action_type)
 - Universal findings schema validation
+
+---
+
+## Synthesis pipeline v2 additions — Business Rules Gate + Recommendation Validator
+
+**Pipeline order** (`web/src/agents/synthesis/synthesisManager.ts`):
+```
+dedup → crossAgentPatterns → applyBusinessRules (NEW) → runRecommendationValidator (NEW) → ImpactScorer.run → formatActionPlan → write
+```
+
+### `businessRules.ts` (deterministic, zero LLM cost)
+
+Added after a real incident: a Market Intelligence finding recommended *"Increase the budget of [campaign] to ₹100000"* (a 47x jump) for a campaign that **another finding in the same run** had already flagged as missing its CPA target — nothing in the pipeline cross-checked the two. Rules:
+
+- **ROAS/CPA gate**: any finding recommending a budget/bid increase — matched either by known id prefix (`budget-locked-*`, `sp-budget-misalloc-*`) OR by a regex catching free-text "increase/raise ... budget/bid" language from *any* analyst (Market Intelligence has no shared id convention for this) — gets demoted one severity tier if the same `target.id` has an open `roas-shortfall-*` or `cpa-overage-*` finding, with the reason appended to `why` and recorded in `validation_flags`.
+- **Rank-vs-budget gate**: same demotion when `searchRankLostIs > searchBudgetLostIs` on the target campaign — a budget increase won't fix a rank-capped campaign.
+- **Evidence-density floor**: findings with <2 numeric evidence points get `confidence` capped at `"low"` regardless of LLM self-rating.
+- **Insufficient-data cap**: findings in `category="competitive"` (Auction Insights / share-of-voice data this account doesn't collect) capped at P3 with `missing_data` auto-populated.
+
+**Known fragility fixed alongside this**: `ImpactScorer.run()` originally recomputed priority purely from `magnitude × confidence / effort`, completely ignoring any severity `businessRules.ts` had already set — a gate's demotion would silently get reverted back up. Fixed: final priority is now whichever of (formula-computed, finding's current severity) is the *lower-urgency* one, so gates can demote but the formula can never silently promote a gated finding back up.
+
+### `recommendationValidatorAgent.ts` (1 batched LLM call/run, the 7th agent)
+
+Reviews the surviving candidate list (after business rules) in **one** call — not one call per finding — and returns per-finding: `is_generic` (demotes one tier if true and not rescued by evidence), `missing_data[]`, `alternative_explanations[]`, optional `confidence_override`. This is the judgment-based check a regex/threshold layer can't do reliably (deciding genericness in context, proposing real alternative causes). Never silently drops a finding — every override lands in `validation_flags`, shown on the dashboard as an amber "⚠ flagged" chip.
+
+### Schema additions backing the above
+
+`Finding` (`web/src/agents/schema.ts`) gained two **optional** fields: `missing_data?: string[]`, `alternative_explanations?: string[]` (analysts and the validator can both populate them; default `[]`). `SynthFinding` additionally has `validation_flags?: string[]` (synthesis-stage bookkeeping only, not analyst output). Matching nullable `jsonb` columns were migrated onto `findings` and `action_plan` (`web/scripts/migrate-validator-columns.ts`).
 
 ---
 
@@ -281,7 +342,9 @@ Every Analyst returns findings in this structure (stored as rows in the `finding
       "confidence": "high|medium|low",
       "effort": "easy|medium|hard",
       "evidence": ["data point 1", "data point 2"],
-      "brain_sources": ["brain_001", "brain_042"]
+      "brain_sources": ["brain_001", "brain_042"],
+      "missing_data": ["data that would make this more defensible — [] if confidence is high"],
+      "alternative_explanations": ["a plausible alternative cause the analyst considered — [] if none"]
     }
   ],
   "summary": "One sentence summary",
@@ -290,7 +353,7 @@ Every Analyst returns findings in this structure (stored as rows in the `finding
 }
 ```
 
-`brain_sources` tracks which Brain entries informed each finding — full traceability.
+`brain_sources` tracks which Brain entries informed each finding — full traceability. `missing_data`/`alternative_explanations` are v2 additions (see "Synthesis pipeline v2 additions" below) — optional, default `[]`, populated by analysts directly or filled in later by the Recommendation Validator agent. `SynthFinding` (the in-pipeline shape, `agent`/`runDate`/`mode` attached) additionally carries `validation_flags?: string[]` once synthesis has run — not analyst output, bookkeeping only.
 
 ---
 
@@ -320,9 +383,9 @@ function score(finding) {
 
 Every `action_plan` row carries:
 - `action_category`: `auto` (implementable via Google Ads Script execute mode under safety rails), `manual` (human must act — e.g. structural changes), or `insight` (informational only, e.g. competitive/trend findings)
-- `action_type`: specific operation, e.g. `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`, etc.
+- `action_type`: specific operation. Original v1 set: `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`. v2 (`web/src/agents/synthesis/actionMeta.ts`) routes by `agent` + `finding.id` prefix and adds: `add_extensions` (Quality & Structure's `extension-*`), `restructure` (`structure-*` and Search Intelligence's `search-term-pattern-*`), `fix_quality_score` (`low-qs-*`/`no-qs-spend-*`), `reallocate_budget` (`idle-budget-*` and the generalized `pacing-*`), `adjust_bid` (`rank-locked-*`), `update_copy` (Audience & Copy findings, and Performance Budget's `low-ctr-*`), `fix_landing_page` (Landing Page Scorer), `fix_conversion_tracking` (`troas-no-value-*`/`no-conv-*`/`no-value-*`/`high-cvr-*`/`low-cvr-*`), `change_bid_strategy` (Performance Budget's default fallback).
 
-Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFormatter.js`.
+Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFormatter.js`, extended for v2's id-prefix conventions documented in `agentNames.ts`.
 
 ---
 
@@ -342,6 +405,8 @@ Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFo
 
 Direct ports of the v1 Sheet schemas, with `*_json` columns becoming `jsonb`. Tables:
 `campaigns`, `campaigns_daily`, `ad_groups`, `keywords`, `ads`, `search_terms`, `extensions`, `negative_keywords` (raw snapshots, replaced wholesale on each collect run, except `campaigns_daily` which appends/upserts by date), and `findings`, `action_plan`, `approvals`, `pending_changes`, `change_log`, `brain_entries`, `config`, `token_usage` (agent layer).
+
+**v2 additions to the agent layer** (see "Synthesis pipeline v2 additions" above): `findings.missing_data` / `findings.alternative_explanations` (nullable `jsonb`, default `[]`); `action_plan.missing_data` / `action_plan.alternative_explanations` / `action_plan.validation_flags` (same). `brain_entries.status` (`active` default — also `staged` for Brain Learning Agent candidates awaiting review, `rejected`). `token_usage.provider` is now a provider **id** (`groq_1`, `cerebras`, `openrouter`, ...), not a fixed `"groq"` string — see "Multi-provider LLM client" above.
 
 **Budget bug fix (the original motivation for v2):** the Overview page computes "today's total daily budget" as `SUM(budget_micros) WHERE status='ENABLED'` from `campaigns`, AND displays `updated_at` (last collection timestamp) next to it so staleness is visible. Pacing is computed from `campaigns_daily`, not the snapshot, so it stays internally consistent.
 
@@ -380,13 +445,14 @@ google-ads-agent/
     │   │       ├── pending-changes/route.ts
     │   │       └── execute-result/route.ts
     │   └── agents/                    # Agent pipeline (run by GitHub Actions)
-    │       ├── analysts/              # 6 Analyst modules
-    │       ├── synthesis/             # dedup, cross-agent patterns, scoring, action-meta
+    │       ├── analysts/              # 6 Analyst modules + recommendationValidatorAgent.ts (7th, reviews output) + brainLearningAgent.ts (weekly)
+    │       ├── synthesis/             # dedup, cross-agent patterns, businessRules.ts (NEW), scoring, action-meta
     │       ├── rules/                 # ported RulesEngine + detect_() functions
-    │       └── llm.ts                 # Groq client
+    │       └── llm.ts                 # multi-provider client: Groq/Cerebras/OpenRouter/Gemini failover (NOT Groq-only anymore)
     └── .github/workflows/
-        ├── daily-audit.yml
-        └── hourly-implementation.yml
+        ├── daily-audit.yml            # cron PAUSED — see "Operational status" above
+        ├── hourly-implementation.yml
+        └── weekly-brain-learning.yml
 ```
 
 ---
@@ -418,6 +484,13 @@ google-ads-agent/
 - **Approval check is sacred** — no code path mutates Google Ads without `action_plan.status = 'approved'`
 - **Brain context is mandatory** — every Analyst must query `brain_entries` before building its Groq prompt
 - After each phase that adds/moves significant code, run `graphify update .` to keep the knowledge graph current
+- **This file is the master brief and MUST be updated whenever architecture changes — not just when a "phase" completes.** New agents, new synthesis-pipeline stages, new providers, new schema fields, new safety-relevant behavior all go in CLAUDE.md in the same session they're built, before moving to the next task. This was skipped for several real changes (businessRules.ts, the Recommendation Validator agent, the multi-provider LLM client) until the user caught the drift — don't let it happen again.
+
+---
+
+## Known gaps / open questions (read honestly, don't paper over)
+
+- **No agent-health/quality monitor over time.** v1 had Manager/Director modules (`apps_script/managers/*.js`: `AuditManager`, `CampaignDirector`, `CopyIntelManager`, `ImplementationManager`, `SynthesisManager`) that orchestrated *and*, to some degree, sat between the raw agents and the rest of the pipeline. v2's equivalent orchestration is `runDailyAudit.ts` (sequences the 7 agents, isolates failures per-agent so one bad call doesn't abort the run) and `synthesisManager.ts` (sequences dedup → patterns → business rules → validator → scoring → write). **Neither of these — nor anything else in v2 — watches the *analysts themselves* for drift over time**: e.g. "Search Intelligence Analyst returned 0 findings for 5 days straight," "Performance & Budget Analyst's average confidence dropped this week," "an agent's findings are getting flagged by the Recommendation Validator at a rising rate." The Recommendation Validator reviews individual findings within a single run; nothing reviews an agent's behavior *across* runs. This is a real, currently-unfilled gap — if a meta-monitor like this is wanted, it should be scoped as a new piece (likely a small weekly/daily job reading `findings`/`action_plan` history per `agent`, not a v1-style "Manager" port, since v1's Managers were mostly orchestration logic v2 already replaced with `runDailyAudit.ts`/`synthesisManager.ts`).
 
 ---
 
@@ -437,13 +510,14 @@ The v1 implementation lives entirely under `apps_script/` and remains functional
 
 ✅ **Fully built and tested:**
 - Next.js dashboard (7 pages: /, /action-plan, /history, /brain, /config + 2 internal pages)
-- 6 consolidated Analyst agents (3 rule-based, 3 pure-LLM)
-- Full synthesis pipeline (dedup, cross-agent patterns, impact scoring, action classification)
-- GitHub Actions automation (daily-audit at 06:00 UTC, hourly-implementation every hour)
+- 6 consolidated Analyst agents (3 rule-based, 3 pure-LLM) + 7th Recommendation Validator agent (reviews output, doesn't produce new findings — see "Synthesis pipeline v2 additions")
+- Full synthesis pipeline (dedup, cross-agent patterns, business-rules gate, recommendation validator, impact scoring, action classification)
+- Multi-provider LLM failover (Groq×4 keys / Cerebras / OpenRouter / Gemini — see "Multi-provider LLM client")
+- GitHub Actions automation (daily-audit — **cron currently paused**, hourly-implementation every hour, weekly-brain-learning Mondays)
 - API endpoints for data collection (/api/ingest), approvals (/api/approve), execution (/api/pending-changes, /api/execute-result)
 - Safety rails (budget caps, bid limits, dry-run mode, approval gates)
 - Slack notifications (optional digest when action items ready)
-- Brain knowledge base (add/edit/delete strategy entries)
+- Brain knowledge base (add/edit/delete strategy entries, plus weekly autonomous Brain Learning Agent staging candidates)
 - Config editor (tune RULE_* thresholds in dashboard)
 
 🔄 **Phase J (Validation & Cutover):**
