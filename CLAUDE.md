@@ -93,6 +93,18 @@ Google Ads Script (execute mode)         [kept from v1 — repointed]
 
 ---
 
+## Dashboard authentication — `web/src/proxy.ts`
+
+**Critical fix (June 2026):** the dashboard and every mutation API route (`/api/approve`, `/api/config`, `/api/config/[key]`, `/api/brain`, `/api/brain/[id]`) had **zero authentication** despite CLAUDE.md long claiming "password-gated" — confirmed live and exploitable: a bare unauthenticated `POST /api/approve` on the public Vercel URL approved a real `action_plan` row. `DASHBOARD_PASSWORD`/`DASHBOARD_USERNAME` Vercel env vars existed (set weeks earlier, both empty strings) but no code ever checked them — the intent was there, the enforcement never shipped.
+
+Fixed via `web/src/proxy.ts` — Next.js 16 renamed `middleware.ts` to `proxy.ts` (the file MUST be named `proxy.ts`, exporting a `proxy` function; `middleware.ts` is silently ignored in this version, see `node_modules/next/dist/docs/.../proxy.md`). It gates **every** page and API route behind HTTP Basic Auth, except the three routes the Google Ads Script itself calls (`/api/ingest`, `/api/pending-changes`, `/api/execute-result` — these already enforce their own `Authorization: Bearer <INGEST_SECRET>` check inside the route handler, which is a separate, intentional credential from the dashboard password).
+
+- Env vars: `DASHBOARD_USERNAME` (default `"admin"` if unset), `DASHBOARD_PASSWORD` (**required** — if unset or empty, `proxy.ts` fails closed and rejects every gated request rather than failing open).
+- Set in `.env.local` for dev, and as Vercel **and** GitHub Actions secrets for anywhere this needs to be replicated.
+- This is exactly the kind of gap that must not recur when this system is replicated to other accounts — confirm `proxy.ts` exists and `DASHBOARD_PASSWORD` is a real (non-empty) value before considering a new account "set up."
+
+---
+
 ## Operational status (read this before assuming the cron is running)
 
 - **`daily-audit` schedule is currently PAUSED** (commented out in `.github/workflows/daily-audit.yml`, not deleted) — the user runs it manually via Actions → daily-audit → "Run workflow" while the pipeline below is being stabilized. Re-enable by uncommenting the `schedule:` block once satisfied with run quality. `hourly-implementation` and `weekly-brain-learning` are unaffected (still on their normal schedules).
