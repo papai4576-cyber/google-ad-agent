@@ -30,6 +30,7 @@ export function deriveActionMeta(f: SynthFinding): ActionMeta {
     if (id.startsWith("add-negative-")) return { action_category: "auto", action_type: "add_negatives" };
     if (id.startsWith("new-keyword-")) return { action_category: "manual", action_type: "add_keywords" };
     if (id.startsWith("search-term-pattern-")) return { action_category: "manual", action_type: "restructure" };
+    if (id.startsWith("cannibalization-")) return { action_category: "manual", action_type: "restructure" };
     return { action_category: "manual", action_type: "add_keywords" };
   }
 
@@ -39,6 +40,8 @@ export function deriveActionMeta(f: SynthFinding): ActionMeta {
     if (id.startsWith("pacing-")) return { action_category: "manual", action_type: "reallocate_budget" };
     if (id.startsWith("rank-locked-")) return { action_category: "manual", action_type: "adjust_bid" };
     if (id.startsWith("low-ctr-")) return { action_category: "manual", action_type: "update_copy" };
+    if (id.startsWith("anomaly-cvr-drop-")) return { action_category: "manual", action_type: "fix_conversion_tracking" };
+    if (id.startsWith("anomaly-cpa-jump-")) return { action_category: "manual", action_type: "change_bid_strategy" };
     if (id.startsWith("troas-no-value-") || id.startsWith("no-conv-") || id.startsWith("no-value-") ||
         id.startsWith("high-cvr-") || id.startsWith("low-cvr-")) {
       return { action_category: "manual", action_type: "fix_conversion_tracking" };

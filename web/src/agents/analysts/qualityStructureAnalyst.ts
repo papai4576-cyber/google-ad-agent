@@ -10,13 +10,16 @@
  * `finding.id` prefixes follow agentNames.ts conventions:
  *   low-qs-, structure-, extension-
  * (no-qs-spend- is ported 1:1 from v1 and falls back to actionMeta's default).
+ * v2 additions (no v1 equivalent): `structure-low-volume-*` / `structure-tiny-budget-*`
+ * (campaigns structurally too small to ever optimize), `structure-utm-*` (missing/
+ * malformed UTM params on ad final URLs) — all fall back to actionMeta's default.
  *
  * Reads: keywords, ad_groups, ads, extensions, campaigns.
  * Brain categories: structure, copy, landing_page.
  */
 
 import type { Candidate, RuleBasedAnalystSpec } from "../runAnalyst";
-import { RulesEngine } from "../rules/rulesEngine";
+import { RulesEngine, getConfigValue } from "../rules/rulesEngine";
 import { AGENTS } from "../synthesis/agentNames";
 import { loadAccountData, micros, type AdGroupRow, type AdRow, type CampaignRow, type ExtensionRow, type KeywordRow } from "../data";
 
@@ -26,11 +29,13 @@ interface QualityStructureData {
   keywords: KeywordRow[];
   ads: AdRow[];
   extensions: ExtensionRow[];
+  brandKeywords: string[];
 }
 
 const RULE_DEFAULTS = {
   QS_MIN_COST: 5,
   QS_MAX: 5,
+  QS_BRAND_MAX: 8,
   QS_P1_COST: 50,
   MAX_ADGROUPS_PER_CAMPAIGN: 30,
   MAX_KEYWORDS_PER_ADGROUP: 20,
@@ -38,10 +43,17 @@ const RULE_DEFAULTS = {
   MIN_SPEND_CONCENTRATION: 1000,
   EXT_MIN_SPEND: 10,
   EXT_HIGH_SPEND: 50,
+  MIN_VIABLE_CONVERSIONS: 10,
+  MIN_BUDGET_CPC_MULTIPLE: 5,
 };
 
 export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnalystSpec<QualityStructureData>> {
-  const data = await loadAccountData();
+  const [loaded, brandRaw] = await Promise.all([loadAccountData(), getConfigValue("BRAND_KEYWORDS", "")]);
+  const brandKeywords = brandRaw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+  const data: QualityStructureData = { ...loaded, brandKeywords };
   const ruleConfig = await RulesEngine.load(RULE_DEFAULTS);
 
   return {
@@ -93,8 +105,8 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
     },
     ruleConfig,
     detect: detectQualityStructure,
-    maxCandidates: 8,
-    maxTokens: 2500,
+    maxCandidates: 10, // bumped from 8 — v2 added 3 new candidate-producing rule types (low-volume, tiny-budget, UTM) competing for slots
+    maxTokens: 3000,
   };
 }
 
@@ -125,10 +137,35 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
     }
   }
 
+  // Stricter than a substring check: for manufacturer-brand accounts (BRAND_KEYWORDS="baidyanath"
+  // and nearly every product query legitimately contains the brand name, e.g. "baidyanath
+  // chyawanprash"), a loose `includes` match flags almost the entire keyword list as "brand" —
+  // verified against real data: 47/70 candidates before this fix. A keyword only counts as PURE
+  // brand/navigational if, after removing the brand term(s) and common navigational stopwords,
+  // at most one word remains (e.g. "baidyanath", "baidyanath official", "baidyanath store") —
+  // NOT "baidyanath chyawanprash" (a real product search, not a navigational brand search).
+  const NAV_STOPWORDS = new Set(["official", "website", "site", "store", "shop", "near", "me", "login", "app", "com", "online", "in"]);
+  const isPureBrandKeyword = (text: string): boolean => {
+    if (data.brandKeywords.length === 0) return false;
+    const words = String(text || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    if (!words.some((w) => data.brandKeywords.includes(w))) return false;
+    const remaining = words.filter((w) => !data.brandKeywords.includes(w) && !NAV_STOPWORDS.has(w));
+    return remaining.length === 0;
+  };
+
   for (const k of data.keywords) {
     const cost = micros(k.costMicros);
     const qs = Number(k.qualityScore) || 0;
-    if (!(cost >= cfg.qs_min_cost && qs >= 1 && qs <= cfg.qs_max)) continue;
+    if (qs === 0) continue;
+    const brand = isPureBrandKeyword(k.text);
+    // Brand keywords get a much stricter bar (you're already winning the search — QS should be near-perfect)
+    // than non-brand (audit standard: non-brand red flag <5, brand red flag <8).
+    const maxForThisKeyword = brand ? cfg.qs_brand_max : cfg.qs_max;
+    if (!(cost >= cfg.qs_min_cost && qs <= maxForThisKeyword)) continue;
 
     const adRel = String(k.creativeQuality || "").toUpperCase();
     const lp = String(k.postClickQuality || "").toUpperCase();
@@ -149,13 +186,16 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
       category = "keywords";
       hint = "Persistently low QS without a single below-average component — consider tighter ad-group theming, or pausing if it stays low.";
     }
+    if (brand) {
+      hint = `BRAND keyword with QS only ${qs}/10 (should be near-perfect — this is your own brand name) — ${hint}`;
+    }
 
     const big = cost > cfg.qs_p1_cost;
     out.push({
       id: `low-qs-${k.keywordId}`,
       category,
-      severity: big ? "P1" : "P2",
-      magnitude: big ? "high" : "medium",
+      severity: brand || big ? "P1" : "P2",
+      magnitude: brand || big ? "high" : "medium",
       confidence: "high",
       effort: "medium",
       metric: "CPA",
@@ -163,7 +203,7 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
       target: { type: "keyword", id: String(k.keywordId), name: k.text },
       hint,
       evidence: [
-        `QS=${qs}`,
+        `QS=${qs}${brand ? " (BRAND keyword)" : ""}`,
         `spend ${cur}${cost.toFixed(0)}`,
         `components adRel=${k.creativeQuality || "?"}, LP=${k.postClickQuality || "?"}, expCTR=${k.searchPredictedCtr || "?"}`,
         `${k.clicks} clicks, ${k.conversions} conv`,
@@ -292,6 +332,97 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
       hint: "Identical keyword text+match appears in multiple ad groups, causing self-competition — consolidate to one owner ad group and negate elsewhere.",
       evidence: [`"${text}" [${mt}]`, `${rows.length} ad groups contain it`],
     });
+  }
+
+  /* ---- Low-volume / tiny-budget campaigns (v2 addition — structurally too small to ever optimize,
+   * a different failure mode than budget-capped: budget-capped means "give it more budget", this means
+   * "this campaign can't gather enough signal regardless of budget level"). ---- */
+
+  const accountAvgCpc = (() => {
+    const totalClicks = data.campaigns.reduce((s, c) => s + (Number(c.clicks) || 0), 0);
+    const totalCost = data.campaigns.reduce((s, c) => s + micros(c.costMicros), 0);
+    return totalClicks > 0 ? totalCost / totalClicks : 0;
+  })();
+
+  for (const c of data.campaigns) {
+    const conv = Number(c.conversions) || 0;
+    const spend = micros(c.costMicros);
+    const budget = micros(c.budgetMicros);
+    const tgt = { type: "campaign" as const, id: String(c.campaignId), name: c.campaignName };
+
+    if (spend > 0 && conv > 0 && conv < cfg.min_viable_conversions) {
+      out.push({
+        id: `structure-low-volume-${c.campaignId}`,
+        category: "structure",
+        severity: "P3",
+        magnitude: "low",
+        confidence: "medium",
+        effort: "hard",
+        metric: "conversions",
+        direction: "up",
+        target: tgt,
+        hint: `Campaign "${c.campaignName}" has only ${conv.toFixed(0)} conversions over the collection window — below the ~${cfg.min_viable_conversions} needed for any bid strategy to learn reliably. Consider consolidating into a related campaign, or broadening targeting, rather than tuning bids on too little data.`,
+        evidence: [`${conv.toFixed(0)} conversions (need ${cfg.min_viable_conversions}+)`, `spend ${cur}${spend.toFixed(0)}`, `strategy ${c.biddingStrategy || "unknown"}`],
+      });
+    }
+
+    if (accountAvgCpc > 0 && budget > 0 && budget < accountAvgCpc * cfg.min_budget_cpc_multiple) {
+      const clicksPerDay = budget / accountAvgCpc;
+      out.push({
+        id: `structure-tiny-budget-${c.campaignId}`,
+        category: "structure",
+        severity: "P3",
+        magnitude: "low",
+        confidence: "medium",
+        effort: "easy",
+        metric: "conversions",
+        direction: "up",
+        target: tgt,
+        hint: `Campaign "${c.campaignName}"'s daily budget (${cur}${budget.toFixed(0)}) buys only ~${clicksPerDay.toFixed(1)} clicks/day at the account's average CPC (${cur}${accountAvgCpc.toFixed(0)}) — too small to gather meaningful daily data. Either raise the budget meaningfully or consolidate into a related campaign.`,
+        evidence: [`daily budget ${cur}${budget.toFixed(0)}`, `account avg CPC ${cur}${accountAvgCpc.toFixed(0)}`, `~${clicksPerDay.toFixed(1)} clicks/day capacity`],
+      });
+    }
+  }
+
+  /* ---- UTM / tracking parameter check on ad final URLs (v2 addition — uses data already collected, never checked before) ---- */
+
+  const utmFlaggedAdGroups = new Set<string>(); // cap noise: one UTM finding per ad group
+  for (const ad of data.ads) {
+    if (utmFlaggedAdGroups.size >= 5) break;
+    const urls = Array.isArray(ad.finalUrls) ? ad.finalUrls : [];
+    const firstUrl = urls.find((u) => typeof u === "string" && u.startsWith("http"));
+    if (!firstUrl) continue;
+    if (utmFlaggedAdGroups.has(ad.adGroupId)) continue;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(firstUrl);
+    } catch {
+      continue;
+    }
+    const params = parsed.searchParams;
+    const hasSource = params.has("utm_source");
+    const hasMedium = params.has("utm_medium");
+    const sourceVal = (params.get("utm_source") || "").toLowerCase();
+    const wrongSource = hasSource && sourceVal !== "" && sourceVal !== "google" && sourceVal !== "adwords" && sourceVal !== "{network}";
+
+    if (!hasSource || !hasMedium || wrongSource) {
+      utmFlaggedAdGroups.add(ad.adGroupId);
+      const issue = wrongSource ? `utm_source="${sourceVal}" (expected "google")` : !hasSource ? "missing utm_source" : "missing utm_medium";
+      out.push({
+        id: `structure-utm-${ad.adId}`,
+        category: "structure",
+        severity: "P3",
+        magnitude: "low",
+        confidence: "high",
+        effort: "easy",
+        metric: "conversions",
+        direction: "up",
+        target: { type: "ad", id: String(ad.adId), name: `${ad.adGroupName} / ad ${ad.adId}` },
+        hint: `Ad in "${ad.adGroupName}" final URL has a tracking-tag problem: ${issue}. This breaks attribution in GA4/analytics for this ad's traffic — fix the URL's UTM parameters (utm_source=google&utm_medium=cpc at minimum).`,
+        evidence: [`url: ${firstUrl.slice(0, 150)}`, issue],
+      });
+    }
   }
 
   /* ---- Extensions (ported from ExtensionAuditor) ---- */

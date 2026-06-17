@@ -13,17 +13,21 @@
  * thin-roas-, thin-cpa-, graduate-tcpa-, manual-to-smart-, troas-no-value-,
  * no-conv-, no-value-, high-cvr-, low-cvr-) are ported 1:1 from v1 and fall
  * back to actionMeta's default (manual / change_bid_strategy).
+ * `anomaly-cpa-jump-*` / `anomaly-cvr-drop-*` (v2 addition, no v1 equivalent)
+ * — 7-day-vs-prior-14-day trend comparison using campaigns_daily; also falls
+ * back to actionMeta's default.
  *
- * Reads: campaigns. Brain categories: bidding, scaling, general.
+ * Reads: campaigns, campaigns_daily. Brain categories: bidding, scaling, general.
  */
 
 import type { Candidate, RuleBasedAnalystSpec } from "../runAnalyst";
 import { RulesEngine } from "../rules/rulesEngine";
 import { AGENTS } from "../synthesis/agentNames";
-import { loadAccountData, micros, type CampaignRow } from "../data";
+import { loadAccountData, micros, readCampaignsDaily, type CampaignRow, type CampaignDailyRow } from "../data";
 
 interface PerformanceBudgetData {
   campaigns: CampaignRow[];
+  campaignsDaily: CampaignDailyRow[];
 }
 
 const RULE_DEFAULTS = {
@@ -45,10 +49,13 @@ const RULE_DEFAULTS = {
   CH_HIGH_CVR_CLICKS: 50,
   CH_LOW_CVR: 0.005,
   CH_LOW_CVR_SPEND: 200,
+  ANOMALY_CPA_JUMP_RATIO: 1.3,
+  ANOMALY_CVR_DROP_RATIO: 0.7,
+  ANOMALY_MIN_BASELINE_CONV: 5,
 };
 
 export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnalystSpec<PerformanceBudgetData>> {
-  const { campaigns } = await loadAccountData();
+  const [{ campaigns }, campaignsDaily] = await Promise.all([loadAccountData(), readCampaignsDaily(21)]);
   const ruleConfig = await RulesEngine.load(RULE_DEFAULTS);
 
   return {
@@ -65,7 +72,7 @@ export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnal
       "check will also catch this, but flag it yourself too).",
     brainCategories: ["bidding", "scaling", "general"],
     brainLimit: 5,
-    data: { campaigns },
+    data: { campaigns, campaignsDaily },
     formatDataForPrompt: (data) => {
       const lines = ["CAMPAIGNS (all enabled, latest snapshot):"];
       for (const c of data.campaigns) {
@@ -114,6 +121,8 @@ function detectPerformanceBudget(data: PerformanceBudgetData, ctx: { targets: { 
     const arr = channelCtrs[ch].slice().sort((a, b) => a - b);
     channelMedian[ch] = arr[Math.floor(arr.length / 2)];
   }
+
+  out.push(...detectTrendAnomalies(data, cfg, cur));
 
   // Account-level pacing: total spend vs monthly budget target.
   if (monthlyBudget > 0) {
@@ -462,6 +471,118 @@ function detectPerformanceBudget(data: PerformanceBudgetData, ctx: { targets: { 
         target: tgt,
         hint: "High spend but near-zero conversion rate — tracking may fire late or on the wrong goal, or the traffic intent is off. Verify tracking before optimising bids.",
         evidence: [`spend ${cur}${spend.toFixed(0)}`, `CVR ${((conv / clicks) * 100).toFixed(2)}%`, `${conv} conv / ${clicks} clicks`],
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * 17. Trend anomaly detection — last 7 days vs the prior 14-day baseline, using
+ * the daily time series (campaigns_daily) the rest of this analyst doesn't
+ * touch (it only reads the latest campaign-level snapshot). Catches CPA
+ * spikes and CVR collapses that a point-in-time snapshot can't see at all —
+ * there was previously no period-over-period comparison anywhere in this
+ * system. Requires a minimum conversion count in the baseline window so a
+ * low-volume campaign's normal noise doesn't get reported as an "anomaly".
+ */
+function detectTrendAnomalies(data: PerformanceBudgetData, cfg: Record<string, number>, cur: string): Candidate[] {
+  const out: Candidate[] = [];
+  if (data.campaignsDaily.length === 0) return out;
+
+  const today = new Date();
+  const recentCutoff = new Date(today);
+  recentCutoff.setUTCDate(recentCutoff.getUTCDate() - 7);
+  const baselineCutoff = new Date(today);
+  baselineCutoff.setUTCDate(baselineCutoff.getUTCDate() - 21);
+
+  const recentCutoffStr = recentCutoff.toISOString().split("T")[0];
+  const baselineCutoffStr = baselineCutoff.toISOString().split("T")[0];
+
+  interface Agg {
+    spend: number;
+    conv: number;
+    clicks: number;
+  }
+  const recentByCampaign = new Map<string, Agg>();
+  const baselineByCampaign = new Map<string, Agg>();
+
+  for (const row of data.campaignsDaily) {
+    const cid = String(row.campaignId);
+    const spend = micros(row.costMicros);
+    const conv = Number(row.conversions) || 0;
+    const clicks = Number(row.clicks) || 0;
+    if (row.date >= recentCutoffStr) {
+      const agg = recentByCampaign.get(cid) || { spend: 0, conv: 0, clicks: 0 };
+      agg.spend += spend;
+      agg.conv += conv;
+      agg.clicks += clicks;
+      recentByCampaign.set(cid, agg);
+    } else if (row.date >= baselineCutoffStr && row.date < recentCutoffStr) {
+      const agg = baselineByCampaign.get(cid) || { spend: 0, conv: 0, clicks: 0 };
+      agg.spend += spend;
+      agg.conv += conv;
+      agg.clicks += clicks;
+      baselineByCampaign.set(cid, agg);
+    }
+  }
+
+  const campaignById = new Map(data.campaigns.map((c) => [String(c.campaignId), c]));
+
+  for (const [cid, recent] of recentByCampaign) {
+    const baseline = baselineByCampaign.get(cid);
+    if (!baseline || baseline.conv < cfg.anomaly_min_baseline_conv) continue; // not enough baseline volume to trust the comparison
+    const c = campaignById.get(cid);
+    const tgt = { type: "campaign" as const, id: cid, name: c?.campaignName || cid };
+
+    // CPA jump: baseline daily-average CPA vs recent daily-average CPA (normalized per day so the two windows, 7d vs 14d, are comparable).
+    const baselineDailyCpa = baseline.conv > 0 ? baseline.spend / 14 / (baseline.conv / 14) : 0;
+    const recentDailyCpa = recent.conv > 0 ? recent.spend / 7 / (recent.conv / 7) : 0;
+    if (baselineDailyCpa > 0 && recentDailyCpa > 0 && recentDailyCpa / baselineDailyCpa >= cfg.anomaly_cpa_jump_ratio) {
+      const jumpRatio = recentDailyCpa / baselineDailyCpa;
+      out.push({
+        id: `anomaly-cpa-jump-${cid}`,
+        category: "performance",
+        severity: jumpRatio >= 2 ? "P1" : "P2",
+        magnitude: jumpRatio >= 2 ? "high" : "medium",
+        confidence: "high",
+        effort: "medium",
+        metric: "CPA",
+        direction: "down",
+        target: tgt,
+        hint: `CPA jumped ${((jumpRatio - 1) * 100).toFixed(0)}% in the last 7 days (${cur}${recentDailyCpa.toFixed(0)}/day-equivalent) vs the prior 14-day baseline (${cur}${baselineDailyCpa.toFixed(0)}). Investigate recent changes: bid/budget edits, auction competition, ad disapprovals, landing page changes.`,
+        evidence: [
+          `recent 7d CPA ${cur}${recentDailyCpa.toFixed(0)}`,
+          `baseline 14d CPA ${cur}${baselineDailyCpa.toFixed(0)}`,
+          `${(jumpRatio).toFixed(2)}x jump`,
+          `baseline conv ${baseline.conv.toFixed(0)}`,
+        ],
+      });
+    }
+
+    // CVR collapse: same normalization.
+    const baselineCvr = baseline.clicks > 0 ? baseline.conv / baseline.clicks : 0;
+    const recentCvr = recent.clicks > 0 ? recent.conv / recent.clicks : 0;
+    if (baselineCvr > 0 && recent.clicks >= 20 && recentCvr / baselineCvr <= cfg.anomaly_cvr_drop_ratio) {
+      const dropPct = (1 - recentCvr / baselineCvr) * 100;
+      out.push({
+        id: `anomaly-cvr-drop-${cid}`,
+        category: "performance",
+        severity: dropPct >= 50 ? "P1" : "P2",
+        magnitude: dropPct >= 50 ? "high" : "medium",
+        confidence: "high",
+        effort: "medium",
+        metric: "conversions",
+        direction: "up",
+        target: tgt,
+        hint: `Conversion rate dropped ${dropPct.toFixed(0)}% in the last 7 days (${(recentCvr * 100).toFixed(2)}% vs baseline ${(baselineCvr * 100).toFixed(2)}%) on ${recent.clicks} recent clicks. Check conversion tracking first (tag firing, goal changes), then landing page / checkout for breakage.`,
+        evidence: [
+          `recent 7d CVR ${(recentCvr * 100).toFixed(2)}%`,
+          `baseline 14d CVR ${(baselineCvr * 100).toFixed(2)}%`,
+          `${recent.clicks} recent clicks`,
+          `${dropPct.toFixed(0)}% drop`,
+        ],
       });
     }
   }

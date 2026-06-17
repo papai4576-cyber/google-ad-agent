@@ -11,9 +11,11 @@
  */
 
 import { db } from "@/db";
-import { campaigns, adGroups, keywords, ads, extensions, searchTerms, negativeKeywords } from "@/db/schema";
+import { campaigns, campaignsDaily, adGroups, keywords, ads, extensions, searchTerms, negativeKeywords } from "@/db/schema";
+import { gte } from "drizzle-orm";
 
 export type CampaignRow = typeof campaigns.$inferSelect;
+export type CampaignDailyRow = typeof campaignsDaily.$inferSelect;
 export type AdGroupRow = typeof adGroups.$inferSelect;
 export type KeywordRow = typeof keywords.$inferSelect;
 export type AdRow = typeof ads.$inferSelect;
@@ -53,6 +55,15 @@ export async function readSearchTerms(): Promise<SearchTermRow[]> {
 export async function readNegativeKeywords(): Promise<NegativeKeywordRow[]> {
   if (!db) return [];
   return db.select().from(negativeKeywords);
+}
+
+/** Read campaigns_daily for the last `days` days (default 21 — enough for a 7d-vs-prior-14d trend comparison). */
+export async function readCampaignsDaily(days = 21): Promise<CampaignDailyRow[]> {
+  if (!db) return [];
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - days);
+  const sinceStr = since.toISOString().split("T")[0];
+  return db.select().from(campaignsDaily).where(gte(campaignsDaily.date, sinceStr));
 }
 
 /** Convert a micros amount (bigint/number/null) to currency units, e.g. 84316670000 -> 84316.67. */

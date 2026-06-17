@@ -327,7 +327,35 @@ All `RULE_*` keys are read from the `config` table via `RulesEngine.load(default
 | `RULE_MAX_KEYWORDS_PER_ADGROUP` | 20 | Quality & Structure Analyst |
 | `RULE_MIN_ACTIVE_ADS` | 2 | Quality & Structure Analyst — ad safety rail |
 | `RULE_MIN_SPEND_CONCENTRATION` | 1000 | Quality & Structure Analyst — single-ad-group concentration risk |
-| `BRAND_KEYWORDS` | (empty) | Audience & Copy Analyst — comma-separated brand keywords for campaign classification |
+| `BRAND_KEYWORDS` | (empty) | Audience & Copy Analyst + Quality & Structure Analyst — comma-separated brand keywords for campaign/keyword classification |
+| `RULE_ANOMALY_CPA_JUMP_RATIO` | 1.30 | Performance & Budget Analyst — 7d-vs-prior-14d CPA jump ratio to flag |
+| `RULE_ANOMALY_CVR_DROP_RATIO` | 0.70 | Performance & Budget Analyst — 7d-vs-prior-14d CVR drop ratio to flag |
+| `RULE_ANOMALY_MIN_BASELINE_CONV` | 5 | Performance & Budget Analyst — min baseline-window conversions to trust the comparison |
+| `RULE_QS_BRAND_MAX` | 8 | Quality & Structure Analyst — QS at or below this = "low" for **pure** brand keywords (stricter than `RULE_QS_MAX`) |
+| `RULE_MIN_VIABLE_CONVERSIONS` | 10 | Quality & Structure Analyst — campaign conversions below this = structurally too small to optimize |
+| `RULE_MIN_BUDGET_CPC_MULTIPLE` | 5 | Quality & Structure Analyst — daily budget below (account avg CPC × this) = too small to gather daily data |
+
+---
+
+## v2 additions from external audit-framework review (June 2026)
+
+User supplied ~44 third-party "Google/Meta Ads skill" reference docs (`skills to look for/`, not committed — personal reference material). Cross-referenced against this system's existing rules to find genuinely new, concrete, **implementable-with-data-we-already-collect** detection logic (explicitly rejected anything requiring new GAQL segments we don't collect — device/geo/hour-of-day/multi-touch-attribution — those are noted as future data-collection work below, not implemented).
+
+**Added (all additive, all in existing analysts, no new agents):**
+- **Trend/anomaly detection** (`performanceBudgetAnalyst.ts`, `anomaly-cpa-jump-*`/`anomaly-cvr-drop-*`) — first period-over-period comparison anywhere in this system. Uses `campaigns_daily` (added `readCampaignsDaily()` to `data.ts`) to compare the last 7 days against the prior 14-day baseline per campaign; requires a minimum baseline conversion count so low-volume noise doesn't get reported as an anomaly.
+- **Search-term cross-ad-group overlap** (`searchIntelligenceAnalyst.ts` Section 4, `cannibalization-*`) — true match-type cannibalization isn't detectable (search_terms has no matched-keyword field), so this is the closest reliable proxy: the same query served from 2+ different ad groups with a ≥1.3x CPC gap between them.
+- **Brand vs non-brand QS split** (`qualityStructureAnalyst.ts`) — brand keywords get a stricter QS bar (`RULE_QS_BRAND_MAX`, default 8) than non-brand (`RULE_QS_MAX`, default 5). **Important nuance discovered while building this**: for manufacturer-brand accounts where `BRAND_KEYWORDS` is the product line's own name (e.g. `"baidyanath"`), a naive substring match flags nearly every keyword as "brand" (47/70 candidates in testing) because product searches legitimately contain the manufacturer name (`"baidyanath chyawanprash"` is a product search, not a navigational brand search). Fixed with `isPureBrandKeyword()` — only counts as brand if, after removing the brand term(s) and common navigational stopwords (official/store/login/etc.), zero words remain. Dropped the false-positive rate to 2/70 on the same data.
+- **Irrelevant-intent auto-negatives** (`searchIntelligenceAnalyst.ts` Section 2 addition) — common junk-intent fragments (jobs/salary/how to/tutorial/login/DIY/reddit/etc., see `JUNK_INTENT_RE`) get flagged as negative-keyword candidates regardless of spend, not gated behind the `NEGATIVE_KW_MIN_WASTE` cost floor like the rest of Section 2.
+- **Low-volume / tiny-budget structural flags** (`qualityStructureAnalyst.ts`, `structure-low-volume-*`/`structure-tiny-budget-*`) — a different failure mode than budget-capped: campaigns that structurally can't gather enough signal to optimize regardless of budget level (conversions below `RULE_MIN_VIABLE_CONVERSIONS`), or whose daily budget can't buy enough clicks at the account's average CPC to matter (`RULE_MIN_BUDGET_CPC_MULTIPLE`).
+- **UTM/tracking validator** (`qualityStructureAnalyst.ts`, `structure-utm-*`) — checks `ads.finalUrls` (data already collected, never checked before) for missing `utm_source`/`utm_medium` or a `utm_source` that isn't `google`/`adwords` (a common copy-paste artifact from Meta UTM templates).
+
+**Explicitly deferred — would need new data collection, not a quick rule addition:**
+- Device/geo/hour-of-day segmentation (`segments.device`, `segments.geo_target_region`, `segments.hour` — new GAQL fields, new collect-mode queries, new tables)
+- A/B test statistical framework (Z-score/sample-size validator — needs Google Ads "Experiments" data, `campaign_experiment` resource, not currently queried)
+- Extension staleness tracking (needs an asset `creation_time` field not currently stored)
+- Negative-keyword recency tracking (needs an `added_at` timestamp not currently stored)
+- Marginal-ROAS / diminishing-returns curve fitting (possible from existing `campaigns_daily` via regression, but materially more complex than the additions above — a candidate for a future pass, not bundled into this one)
+- Multi-touch attribution model comparison, external industry benchmarking — need data sources this system doesn't have access to at all
 
 ---
 
