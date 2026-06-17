@@ -23,6 +23,8 @@ interface MarketIntelligenceData {
   searchTerms: SearchTermRow[];
   campaigns: CampaignRow[];
   cur: string;
+  targetCpa: number;
+  targetRoas: number;
 }
 
 export async function buildMarketIntelligenceAnalystSpec(): Promise<AnalystSpec<MarketIntelligenceData>> {
@@ -43,7 +45,10 @@ export async function buildMarketIntelligenceAnalystSpec(): Promise<AnalystSpec<
       "Brand protection is usually the cheapest CPC; defend it first.\n\n" +
       "Surface up to 6 findings total. Focus areas:\n" +
       "  1. Brand defense gaps: BRAND campaigns with search impression share < 90% — cite the exact IS %. Recommend a " +
-      "bid or budget increase.\n" +
+      "bid or budget increase ONLY if the same campaign's CPA/ROAS (given in the DATA section) is at or better than " +
+      "target — if it's missing target, say so explicitly and recommend fixing efficiency instead, do not suggest more " +
+      "spend. Any budget figure you do suggest must be a maximum of +20% over the current daily budget shown in the " +
+      "data — never propose a multi-x jump.\n" +
       '  2. Competitor-comparison queries ("X vs Y", "X alternative", "better than X") in the search-term mix — cite ' +
       "impression and conversion counts. Suggest dedicated comparison landing pages or sitelinks.\n" +
       "  3. Rank IS loss on key non-brand campaigns alongside high CPCs — cite the rank_lost_IS % and current CPC.\n" +
@@ -62,7 +67,7 @@ export async function buildMarketIntelligenceAnalystSpec(): Promise<AnalystSpec<
     brainCategories: ["competitive", "brand", "general", "pmax"],
     brainLimit: 5,
     maxTokens: 3500,
-    data: { searchTerms, campaigns, cur: targets.currency_symbol },
+    data: { searchTerms, campaigns, cur: targets.currency_symbol, targetCpa: targets.target_cpa, targetRoas: targets.target_roas },
     formatDataForPrompt,
   };
 }
@@ -71,18 +76,24 @@ function formatDataForPrompt(d: MarketIntelligenceData): string {
   const lines: string[] = [];
   const cur = d.cur;
 
-  // 1. Brand campaigns and their impression share.
+  // 1. Brand campaigns and their impression share — CPA/ROAS/budget included so the LLM can actually check
+  // efficiency before recommending a spend increase, instead of being told to "check the data" with no data there.
   const brandCampaigns = d.campaigns.filter((c) => /brand/i.test(c.campaignName) && c.channelType === "SEARCH");
   if (brandCampaigns.length) {
-    lines.push("Brand campaigns and their impression share:");
-    lines.push("id | name | spend | conv | search_IS | budget_lost_IS | rank_lost_IS");
+    lines.push(`Brand campaigns and their impression share (target CPA ${cur}${d.targetCpa}, target ROAS ${d.targetRoas}x):`);
+    lines.push("id | name | daily_budget | spend | conv | cpa | roas | search_IS | budget_lost_IS | rank_lost_IS");
     for (const c of brandCampaigns) {
+      const spend = micros(c.costMicros);
+      const conv = Number(c.conversions) || 0;
+      const convVal = Number(c.conversionValue) || 0;
+      const cpa = conv > 0 ? (spend / conv).toFixed(0) : "n/a";
+      const roas = spend > 0 && convVal > 0 ? (convVal / spend).toFixed(2) : "n/a";
       const is = (Number(c.searchIs) || 0) * 100;
       const budgetLost = (Number(c.searchBudgetLostIs) || 0) * 100;
       const rankLost = (Number(c.searchRankLostIs) || 0) * 100;
       lines.push(
-        `${c.campaignId} | ${c.campaignName} | ${cur}${micros(c.costMicros).toFixed(2)} | ${c.conversions} | ` +
-          `${is.toFixed(0)}% | ${budgetLost.toFixed(0)}% | ${rankLost.toFixed(0)}%`
+        `${c.campaignId} | ${c.campaignName} | ${cur}${micros(c.budgetMicros).toFixed(0)}/day | ${cur}${spend.toFixed(2)} | ${conv} | ` +
+          `${cur}${cpa} | ${roas}x | ${is.toFixed(0)}% | ${budgetLost.toFixed(0)}% | ${rankLost.toFixed(0)}%`
       );
     }
   }

@@ -5,11 +5,16 @@
  *
  * Generalizes two patterns that previously only fired for one narrow
  * combination each:
- *   - ROAS/CPA gate: ANY `increase_budget`-shaped finding (not just the one
- *     `capped-underperf` rule in performanceBudgetAnalyst.ts) gets demoted
- *     if the same campaign also has an open ROAS-shortfall or CPA-overage
- *     finding — recommending more spend on an already-inefficient campaign
- *     is the exact failure mode this gate exists to catch.
+ *   - ROAS/CPA gate: ANY finding recommending a budget/bid increase — caught
+ *     either by known id prefix (performanceBudgetAnalyst's own findings) OR
+ *     by matching "increase/raise ... budget/bid" language in the finding's
+ *     own action/why text, since other analysts (e.g. Market Intelligence's
+ *     brand-defense recommendations) make the same kind of suggestion in
+ *     free text with no shared id convention — gets demoted if the same
+ *     campaign also has an open ROAS-shortfall or CPA-overage finding.
+ *     Recommending more spend on an already-inefficient campaign is the
+ *     exact failure mode this gate exists to catch, regardless of which
+ *     analyst said it.
  *   - Rank-vs-budget gate: generalizes the one-off `sp-rank-cpa-trap-*`
  *     cross-agent pattern into a rule applied to every budget-shaped
  *     finding, not just that one hardcoded id combination.
@@ -28,6 +33,16 @@ import { getTargets } from "../rules/rulesEngine";
 import type { Severity, SynthFinding } from "../schema";
 
 const BUDGET_INCREASE_PREFIXES = ["budget-locked-", "sp-budget-misalloc-"];
+
+/**
+ * Catches free-text budget/bid-increase recommendations from analysts with no
+ * shared id convention (e.g. Market Intelligence's brand-defense findings,
+ * which always carry an LLM-invented id). Matches "increase/raise ... budget"
+ * in either word order, within a short span so it doesn't fire on unrelated
+ * sentences that merely mention "budget" elsewhere in the same finding.
+ */
+const BUDGET_OR_BID_INCREASE_RE =
+  /\b(increase|raise|rais\w*|boost)\b[^.]{0,100}\b(budget|bids?)\b|\b(budget|bids?)\b[^.]{0,60}\b(increase|raise|rais\w*|boost)\b/i;
 
 /** Categories the account's current data collection cannot back with real evidence (CLAUDE.md-documented gaps). */
 const INSUFFICIENT_DATA_CATEGORIES: Record<string, string[]> = {
@@ -70,7 +85,8 @@ export async function applyBusinessRules(findings: SynthFinding[]): Promise<{ fi
 }
 
 function isBudgetIncreaseFinding(f: SynthFinding): boolean {
-  return BUDGET_INCREASE_PREFIXES.some((p) => f.id.startsWith(p));
+  if (BUDGET_INCREASE_PREFIXES.some((p) => f.id.startsWith(p))) return true;
+  return BUDGET_OR_BID_INCREASE_RE.test(f.action) || BUDGET_OR_BID_INCREASE_RE.test(f.why);
 }
 
 function demoteSeverity(sev: Severity): Severity {

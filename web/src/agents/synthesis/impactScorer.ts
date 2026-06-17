@@ -33,7 +33,15 @@ export const ImpactScorer = {
 
     const scored = findings.map((f) => {
       const computed = score(f);
-      const priority = priorityFor(computed);
+      const formulaPriority = priorityFor(computed);
+      // businessRules.ts / recommendationValidatorAgent.ts may have already demoted
+      // f.severity (e.g. the ROAS-gate on a budget-increase finding). The formula
+      // is computed from magnitude/confidence/effort alone and knows nothing about
+      // that demotion — without this check it would silently promote the finding
+      // right back to its original priority. Never let the formula promote a
+      // finding above a severity that's already been demoted: take whichever of
+      // the two is the LOWER urgency (higher rank number).
+      const priority = priorityRank(formulaPriority) >= priorityRank(f.severity) ? formulaPriority : f.severity;
       if (priority !== f.severity) overrides++;
       if (priority === "P1") p1++;
       else if (priority === "P2") p2++;
@@ -59,4 +67,8 @@ function priorityFor(scoreValue: number): Severity {
   if (scoreValue >= PRIORITY_THRESHOLDS.P1) return "P1";
   if (scoreValue >= PRIORITY_THRESHOLDS.P2) return "P2";
   return "P3";
+}
+
+function priorityRank(p: Severity): number {
+  return p === "P1" ? 1 : p === "P2" ? 2 : 3;
 }
