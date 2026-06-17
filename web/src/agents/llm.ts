@@ -79,16 +79,16 @@ interface ProviderConfig {
   model: string;
   /** Proactive daily-ceiling default for this provider; overridable via config.<ID>_DAILY_TOKEN_CEILING. */
   defaultCeiling: number;
-  /** Regex matched against 429 response bodies to detect a daily-quota-type error (bail to next provider, don't retry). */
+  /** Regex matched against 429 response bodies to detect a genuine daily-quota error (bail to next provider, don't retry). Must NOT match transient/retryable rate-limit wording — those go through the normal backoff-retry path instead. */
   tpdErrorPattern: RegExp;
   /**
-   * Extra max_tokens headroom added on top of the caller's requested budget.
-   * Chain-of-thought/reasoning models (e.g. gpt-oss-120b) spend tokens on a
-   * hidden `reasoning` field before emitting `content` — without headroom,
-   * the response can hit the token limit mid-reasoning with empty content.
-   * 0 for plain instruct models.
+   * Extra max_tokens headroom added on top of the caller's requested budget,
+   * for providers where `extraPayload` can't fully suppress reasoning (kept
+   * as a safety margin, not the primary fix — see `extraPayload`).
    */
   reasoningHeadroom: number;
+  /** Extra fields merged into the request body — e.g. Cerebras's `reasoning_effort: "none"` to disable chain-of-thought entirely. */
+  extraPayload?: Record<string, unknown>;
 }
 
 /**
@@ -157,14 +157,14 @@ function buildProviders(): ProviderConfig[] {
       endpoint: "https://api.cerebras.ai/v1/chat/completions",
       apiKey: cerebrasKey,
       // Verified live against this key (June 2026): the account's only models are gpt-oss-120b and zai-glm-4.7.
-      // Both can intermittently emit a hidden chain-of-thought `reasoning` field before `content` (observed on
-      // zai-glm-4.7 too, not just gpt-oss — non-deterministic, varies by call) which can exhaust max_tokens before
-      // any content is produced. Unconditional headroom on this provider, regardless of model, is cheap insurance
-      // against Cerebras's 1M-token/day budget.
+      // Both reasoned at length on real (non-trivial) analyst prompts — far beyond what a fixed token headroom can
+      // reliably cover, producing empty/truncated `content`. Cerebras exposes `reasoning_effort: "none"` to
+      // disable chain-of-thought entirely (see extraPayload below) — the actual fix, not a token-budget workaround.
       model: process.env.CEREBRAS_MODEL || "zai-glm-4.7",
       defaultCeiling: 900000,
-      tpdErrorPattern: /tokens per day|TPD|rate.?limit|quota/i,
-      reasoningHeadroom: 1200,
+      tpdErrorPattern: /tokens per day|TPD|requests per day|daily limit/i,
+      reasoningHeadroom: 300, // small safety margin in case reasoning_effort:none still emits a brief reasoning field
+      extraPayload: { reasoning_effort: "none" },
     });
   }
 
@@ -176,11 +176,14 @@ function buildProviders(): ProviderConfig[] {
       apiKey: openRouterKey,
       // OpenRouter's free catalog rotates — verified live (June 2026): llama-3.3-70b-instruct:free and
       // qwen3-next-80b-a3b-instruct:free were both congested (429 upstream), nemotron-3-super-120b-a12b:free is a
-      // reasoning model (needs headroom, same risk as Cerebras's gpt-oss-120b). gemma-4-26b-a4b-it:free returned
-      // clean `content` at low max_tokens with no reasoning overhead — used as the default.
+      // reasoning model (needs headroom, same risk Cerebras has). gemma-4-26b-a4b-it:free returned clean `content`
+      // at low max_tokens with no reasoning overhead — used as the default.
       model: process.env.OPENROUTER_MODEL || "google/gemma-4-26b-a4b-it:free",
       defaultCeiling: 900000, // real constraint is 50-1000 requests/day, not tokens — this pipeline makes ~8 calls/day total
-      tpdErrorPattern: /rate.?limit|quota|too many requests/i,
+      // NARROW on purpose: OpenRouter's free-model 429s are usually "temporarily rate-limited upstream... retry
+      // shortly" with a `Retry-After` header (transient, congestion on the shared free pool) — those must fall
+      // through to the normal backoff-retry path, NOT bail immediately. Only bail for genuine daily/account caps.
+      tpdErrorPattern: /per day|daily limit|out of (free )?credits/i,
       reasoningHeadroom: 0,
     });
   }
@@ -265,6 +268,7 @@ async function callProvider(p: ProviderConfig, systemPrompt: string, userPrompt:
     ],
     temperature: cfg.temperature,
     max_tokens: cfg.max_tokens,
+    ...(p.extraPayload || {}),
   };
   if (cfg.json) {
     payload.response_format = { type: "json_object" };
