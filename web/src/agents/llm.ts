@@ -11,6 +11,7 @@
  *   2. Groq key 2..4   (GROQ_API_KEY_2/_3/_4)    — optional, extra free accounts
  *   3. Google Gemini   (GEMINI_API_KEY)          — optional, OpenAI-compatible endpoint
  *   4. Cerebras        (CEREBRAS_API_KEY)        — optional, OpenAI-compatible endpoint
+ *   5. OpenRouter       (OPENROUTER_API_KEY)     — optional, ":free" model, OpenAI-compatible
  *
  * Any provider whose env var is unset is simply absent from the list — no
  * error, no config needed beyond adding the key. When the current provider
@@ -44,6 +45,15 @@ export interface LLMOptions {
   max_retries?: number;
   /** Tag for logs — usually the agent name. */
   label?: string;
+  /**
+   * Set true when the prompt may run large (big data tables / batched review
+   * lists — roughly >6K tokens combined). Cerebras's free tier caps context at
+   * 8,192 tokens; OpenRouter's free Llama 3.3 70B routes through providers with
+   * much larger context windows. For large prompts, Cerebras is tried LAST
+   * instead of second, since it's the most likely to reject with a
+   * context-length error (researched June 2026 — see llm.ts header comment).
+   */
+  largePrompt?: boolean;
 }
 
 export interface LLMResult {
@@ -69,9 +79,39 @@ interface ProviderConfig {
   model: string;
   /** Proactive daily-ceiling default for this provider; overridable via config.<ID>_DAILY_TOKEN_CEILING. */
   defaultCeiling: number;
-  /** Whether this provider's TPD (tokens-per-day) 429 errors match Groq's wording — affects fail-fast detection. */
+  /** Regex matched against 429 response bodies to detect a daily-quota-type error (bail to next provider, don't retry). */
   tpdErrorPattern: RegExp;
+  /**
+   * Extra max_tokens headroom added on top of the caller's requested budget.
+   * Chain-of-thought/reasoning models (e.g. gpt-oss-120b) spend tokens on a
+   * hidden `reasoning` field before emitting `content` — without headroom,
+   * the response can hit the token limit mid-reasoning with empty content.
+   * 0 for plain instruct models.
+   */
+  reasoningHeadroom: number;
 }
+
+/**
+ * Provider order rationale (researched June 2026 — see sources in PR/commit):
+ *   1. Groq (each key: 100K tokens/day) — fastest, already proven reliable
+ *      JSON-mode output in this exact pipeline. Multiple free accounts each
+ *      get an independent quota, so this is the cheapest way to add headroom.
+ *   2. Cerebras (1M tokens/day, 10x a single Groq key) — same Llama 3.3 70B
+ *      model family, very fast, huge daily headroom. BUT its free tier caps
+ *      context at 8,192 tokens, so it's a poor fit for prompts with large
+ *      data tables (search-term batches, multi-campaign account dumps,
+ *      the recommendation validator's batched review). Default order; see
+ *      `largePrompt` for prompts that should try it last instead.
+ *   3. OpenRouter (50-1000 requests/day depending on credit, 20 RPM) — the
+ *      most rate-limited of the three by request count, but its free models
+ *      (we use llama-3.3-70b-instruct:free for consistency) typically route
+ *      through providers with much larger context windows than Cerebras's
+ *      free tier, and offer real model diversity if ever wanted. Used last
+ *      under default ordering; promoted ahead of Cerebras for large prompts.
+ *   4. Gemini — optional, not currently configured; very large context
+ *      window, no known small-context-cap issue, so it stays in its
+ *      registered position regardless of `largePrompt`.
+ */
 
 function buildProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
@@ -93,6 +133,7 @@ function buildProviders(): ProviderConfig[] {
       model: "llama-3.3-70b-versatile",
       defaultCeiling: 90000,
       tpdErrorPattern: /tokens per day|TPD|tokens_per_day/i,
+      reasoningHeadroom: 0,
     });
   });
 
@@ -105,6 +146,7 @@ function buildProviders(): ProviderConfig[] {
       model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
       defaultCeiling: 800000, // free tier is RPM/RPD-gated, not a published TPD figure — generous soft cap
       tpdErrorPattern: /quota|rate.?limit|resource.?exhausted/i,
+      reasoningHeadroom: 0,
     });
   }
 
@@ -114,13 +156,47 @@ function buildProviders(): ProviderConfig[] {
       id: "cerebras",
       endpoint: "https://api.cerebras.ai/v1/chat/completions",
       apiKey: cerebrasKey,
-      model: process.env.CEREBRAS_MODEL || "llama-3.3-70b",
+      // Verified live against this key (June 2026): the account's only models are gpt-oss-120b and zai-glm-4.7.
+      // Both can intermittently emit a hidden chain-of-thought `reasoning` field before `content` (observed on
+      // zai-glm-4.7 too, not just gpt-oss — non-deterministic, varies by call) which can exhaust max_tokens before
+      // any content is produced. Unconditional headroom on this provider, regardless of model, is cheap insurance
+      // against Cerebras's 1M-token/day budget.
+      model: process.env.CEREBRAS_MODEL || "zai-glm-4.7",
       defaultCeiling: 900000,
       tpdErrorPattern: /tokens per day|TPD|rate.?limit|quota/i,
+      reasoningHeadroom: 1200,
+    });
+  }
+
+  const openRouterKey = (process.env.OPENROUTER_API_KEY || "").trim();
+  if (openRouterKey) {
+    providers.push({
+      id: "openrouter",
+      endpoint: "https://openrouter.ai/api/v1/chat/completions",
+      apiKey: openRouterKey,
+      // OpenRouter's free catalog rotates — verified live (June 2026): llama-3.3-70b-instruct:free and
+      // qwen3-next-80b-a3b-instruct:free were both congested (429 upstream), nemotron-3-super-120b-a12b:free is a
+      // reasoning model (needs headroom, same risk as Cerebras's gpt-oss-120b). gemma-4-26b-a4b-it:free returned
+      // clean `content` at low max_tokens with no reasoning overhead — used as the default.
+      model: process.env.OPENROUTER_MODEL || "google/gemma-4-26b-a4b-it:free",
+      defaultCeiling: 900000, // real constraint is 50-1000 requests/day, not tokens — this pipeline makes ~8 calls/day total
+      tpdErrorPattern: /rate.?limit|quota|too many requests/i,
+      reasoningHeadroom: 0,
     });
   }
 
   return providers;
+}
+
+/** Moves Cerebras to the end of the list — see `largePrompt` doc on LLMOptions for why. */
+function orderForPromptSize(providers: ProviderConfig[], largePrompt: boolean): ProviderConfig[] {
+  if (!largePrompt) return providers;
+  const idx = providers.findIndex((p) => p.id === "cerebras");
+  if (idx === -1) return providers;
+  const reordered = providers.slice();
+  const [cerebras] = reordered.splice(idx, 1);
+  reordered.push(cerebras);
+  return reordered;
 }
 
 /* ===========================================================================
@@ -141,9 +217,9 @@ export async function callLLM(systemPrompt: string, userPrompt: string, options?
     throw new Error("callLLM: userPrompt must be a non-empty string.");
   }
 
-  const providers = buildProviders();
+  const providers = orderForPromptSize(buildProviders(), opts.largePrompt === true);
   if (providers.length === 0) {
-    throw new Error("callLLM: no LLM provider configured. Set GROQ_API_KEY (and optionally GROQ_API_KEY_2/_3/_4, GEMINI_API_KEY, CEREBRAS_API_KEY).");
+    throw new Error("callLLM: no LLM provider configured. Set GROQ_API_KEY (and optionally GROQ_API_KEY_2/_3/_4, GEMINI_API_KEY, CEREBRAS_API_KEY, OPENROUTER_API_KEY).");
   }
 
   const failures: string[] = [];
@@ -174,7 +250,7 @@ async function callProvider(p: ProviderConfig, systemPrompt: string, userPrompt:
     json: options.json !== false,
     model: options.model || p.model,
     temperature: typeof options.temperature === "number" ? options.temperature : LLM.temperature,
-    max_tokens: options.max_tokens || LLM.max_tokens,
+    max_tokens: (options.max_tokens || LLM.max_tokens) + p.reasoningHeadroom,
     max_retries: typeof options.max_retries === "number" ? options.max_retries : 4,
     label: options.label || "",
   };

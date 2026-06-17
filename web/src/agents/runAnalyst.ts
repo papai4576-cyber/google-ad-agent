@@ -72,6 +72,8 @@ export interface AnalystSpec<TData = unknown> {
   maxTokens?: number;
   data: TData;
   formatDataForPrompt: (data: TData) => string;
+  /** Set true for analysts whose prompt routinely includes large data tables (see LLMOptions.largePrompt in llm.ts). */
+  largePrompt?: boolean;
 }
 
 export interface RuleBasedAnalystSpec<TData = unknown> extends AnalystSpec<TData> {
@@ -108,6 +110,7 @@ export async function runPureLLMAnalyst<TData>(spec: AnalystSpec<TData>, runDate
     label: spec.agentName,
     max_tokens: spec.maxTokens ?? 3500,
     temperature: 0.2,
+    largePrompt: spec.largePrompt,
   });
 
   const { findings, dropped, summary } = validateAndNormalize(llm.json);
@@ -184,6 +187,7 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
     label: spec.agentName,
     max_tokens: spec.maxTokens ?? 2000,
     temperature: 0.2,
+    largePrompt: spec.largePrompt,
   });
 
   // Index the LLM's prose by echoed id.

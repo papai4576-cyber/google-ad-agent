@@ -38,6 +38,7 @@ export async function buildSearchIntelligenceAnalystSpec(): Promise<AnalystSpec<
 
   return {
     agentName: AGENTS.SEARCH_INTELLIGENCE,
+    largePrompt: true, // up to ~115 search-term rows across 3 sections
     persona:
       "You are a senior Google Ads search-term specialist combining three skills: harvesting converting queries into " +
       "exact-match keywords, blocking wasted spend with negative keywords, and spotting account-wide intent patterns " +

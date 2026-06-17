@@ -30,6 +30,7 @@ export async function buildMarketIntelligenceAnalystSpec(): Promise<AnalystSpec<
 
   return {
     agentName: AGENTS.MARKET_INTELLIGENCE,
+    largePrompt: true, // up to ~80 search-term rows plus brand-campaign + comparison-query tables
     persona:
       "You are a senior Google Ads market-intelligence analyst combining two skills: competitive intel (brand defense " +
       "gaps, competitor-comparison query intent, rank-IS loss) and category trend spotting (emerging/declining intent " +

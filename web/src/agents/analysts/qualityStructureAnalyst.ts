@@ -46,6 +46,7 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
 
   return {
     agentName: AGENTS.QUALITY_STRUCTURE,
+    largePrompt: true, // account-structure dump across up to 12 campaigns x 8 ad groups x keywords
     persona:
       "You are a Google Ads Quality Score and account-architecture specialist favouring Single-Theme Ad Groups and clean " +
       "brand/non-brand separation. You turn flagged low-QS keywords, structural debt, and extension gaps into specific, " +

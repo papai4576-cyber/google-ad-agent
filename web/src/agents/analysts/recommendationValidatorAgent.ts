@@ -39,6 +39,7 @@ export async function runRecommendationValidator(findings: SynthFinding[], runDa
       label: "recommendation_validator",
       max_tokens: 4000,
       temperature: 0.1,
+      largePrompt: true, // up to 60 batched findings reviewed at once
     });
 
     const annotations = parseAnnotations(llm.json);
