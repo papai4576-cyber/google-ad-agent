@@ -1,11 +1,27 @@
 /**
- * llm.ts — Groq Llama 3.3 70B client used by every Analyst.
+ * llm.ts — multi-provider LLM client used by every Analyst, with automatic
+ * failover across providers/keys so one exhausted free-tier daily quota
+ * doesn't stall the whole pipeline.
  *
- * Ported from apps_script/llm.js. Differences from the Apps Script version:
- *   - fetch + async/await instead of UrlFetchApp + Utilities.sleep
- *   - GROQ_API_KEY comes from process.env instead of Script Properties
- *   - token usage / daily ceiling are tracked in the `token_usage` and
- *     `config` Postgres tables instead of Script Properties
+ * Ported from apps_script/llm.js (Groq-only) and extended: callLLM() now
+ * tries a ranked list of providers built from whichever API keys are set in
+ * the environment, in order:
+ *
+ *   1. Groq key 1     (GROQ_API_KEY)            — required, primary
+ *   2. Groq key 2..4   (GROQ_API_KEY_2/_3/_4)    — optional, extra free accounts
+ *   3. Google Gemini   (GEMINI_API_KEY)          — optional, OpenAI-compatible endpoint
+ *   4. Cerebras        (CEREBRAS_API_KEY)        — optional, OpenAI-compatible endpoint
+ *
+ * Any provider whose env var is unset is simply absent from the list — no
+ * error, no config needed beyond adding the key. When the current provider
+ * is at its proactive daily ceiling (or its call fails for any reason —
+ * TPD limit, transient error exhausted after retries, bad key), callLLM
+ * moves to the next provider in the list rather than throwing immediately.
+ * Only throws if EVERY configured provider is exhausted/failing.
+ *
+ * Token usage is tracked per provider id (e.g. "groq_1", "gemini") in the
+ * `token_usage` table, so each provider/key gets its own independent daily
+ * ceiling — exhausting groq_1 does not affect groq_2's budget.
  */
 
 import { eq, and } from "drizzle-orm";
@@ -13,9 +29,6 @@ import { db } from "@/db";
 import { config, tokenUsage } from "@/db/schema";
 
 export const LLM = {
-  provider: "groq",
-  endpoint: "https://api.groq.com/openai/v1/chat/completions",
-  model: "llama-3.3-70b-versatile",
   temperature: 0.3,
   max_tokens: 4000,
   request_timeout_ms: 60000,
@@ -27,7 +40,7 @@ export interface LLMOptions {
   model?: string;
   temperature?: number;
   max_tokens?: number;
-  /** Attempts on 429/5xx before giving up (default 4). */
+  /** Attempts on 429/5xx before giving up (default 4), per provider. */
   max_retries?: number;
   /** Tag for logs — usually the agent name. */
   label?: string;
@@ -35,7 +48,8 @@ export interface LLMOptions {
 
 export interface LLMResult {
   ok: true;
-  provider: "groq";
+  /** Provider id that actually served this call, e.g. "groq_1", "gemini", "cerebras". */
+  provider: string;
   json: Record<string, unknown> | null;
   text: string;
   model: string;
@@ -44,8 +58,78 @@ export interface LLMResult {
   attempts: number;
 }
 
+/* ===========================================================================
+ * Provider registry — built from whichever env vars are set.
+ * ========================================================================= */
+
+interface ProviderConfig {
+  id: string;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  /** Proactive daily-ceiling default for this provider; overridable via config.<ID>_DAILY_TOKEN_CEILING. */
+  defaultCeiling: number;
+  /** Whether this provider's TPD (tokens-per-day) 429 errors match Groq's wording — affects fail-fast detection. */
+  tpdErrorPattern: RegExp;
+}
+
+function buildProviders(): ProviderConfig[] {
+  const providers: ProviderConfig[] = [];
+
+  const groqKeys = [
+    process.env.GROQ_API_KEY,
+    process.env.GROQ_API_KEY_2,
+    process.env.GROQ_API_KEY_3,
+    process.env.GROQ_API_KEY_4,
+  ]
+    .map((k) => (k || "").trim())
+    .filter(Boolean);
+
+  groqKeys.forEach((apiKey, i) => {
+    providers.push({
+      id: `groq_${i + 1}`,
+      endpoint: "https://api.groq.com/openai/v1/chat/completions",
+      apiKey,
+      model: "llama-3.3-70b-versatile",
+      defaultCeiling: 90000,
+      tpdErrorPattern: /tokens per day|TPD|tokens_per_day/i,
+    });
+  });
+
+  const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
+  if (geminiKey) {
+    providers.push({
+      id: "gemini",
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      apiKey: geminiKey,
+      model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      defaultCeiling: 800000, // free tier is RPM/RPD-gated, not a published TPD figure — generous soft cap
+      tpdErrorPattern: /quota|rate.?limit|resource.?exhausted/i,
+    });
+  }
+
+  const cerebrasKey = (process.env.CEREBRAS_API_KEY || "").trim();
+  if (cerebrasKey) {
+    providers.push({
+      id: "cerebras",
+      endpoint: "https://api.cerebras.ai/v1/chat/completions",
+      apiKey: cerebrasKey,
+      model: process.env.CEREBRAS_MODEL || "llama-3.3-70b",
+      defaultCeiling: 900000,
+      tpdErrorPattern: /tokens per day|TPD|rate.?limit|quota/i,
+    });
+  }
+
+  return providers;
+}
+
+/* ===========================================================================
+ * Public API
+ * ========================================================================= */
+
 /**
- * Call Groq. Throws on unrecoverable failure (after retries, or daily ceiling).
+ * Call an LLM, trying each configured provider in order until one succeeds.
+ * Throws only if every provider is exhausted or fails.
  */
 export async function callLLM(systemPrompt: string, userPrompt: string, options?: LLMOptions): Promise<LLMResult> {
   const opts = options || {};
@@ -57,28 +141,38 @@ export async function callLLM(systemPrompt: string, userPrompt: string, options?
     throw new Error("callLLM: userPrompt must be a non-empty string.");
   }
 
-  if (await overDailyCeiling("groq")) {
-    const used = await tokensUsedToday("groq");
-    const ceil = await dailyTokenCeiling("groq");
-    throw new Error(
-      `callLLM: Groq at daily token ceiling (${used}/${ceil} tokens used today). Resets at 00:00 UTC.`
-    );
+  const providers = buildProviders();
+  if (providers.length === 0) {
+    throw new Error("callLLM: no LLM provider configured. Set GROQ_API_KEY (and optionally GROQ_API_KEY_2/_3/_4, GEMINI_API_KEY, CEREBRAS_API_KEY).");
   }
 
-  const res = await callGroq(systemPrompt, userPrompt, opts);
-  await recordTokenUsage("groq", res.tokens.total);
-  return res;
+  const failures: string[] = [];
+
+  for (const p of providers) {
+    if (await overDailyCeiling(p.id, p.defaultCeiling)) {
+      const used = await tokensUsedToday(p.id);
+      failures.push(`${p.id}: at daily ceiling (${used}/${await dailyTokenCeiling(p.id, p.defaultCeiling)})`);
+      continue;
+    }
+
+    try {
+      const res = await callProvider(p, systemPrompt, userPrompt, opts);
+      await recordTokenUsage(p.id, res.tokens.total);
+      return res;
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      failures.push(`${p.id}: ${msg.slice(0, 200)}`);
+      console.log(`[llm] ${p.id} failed, trying next provider if available: ${msg.slice(0, 200)}`);
+    }
+  }
+
+  throw new Error(`callLLM: all ${providers.length} provider(s) exhausted/failed. ${failures.join(" | ")}`);
 }
 
-async function callGroq(systemPrompt: string, userPrompt: string, options: LLMOptions): Promise<LLMResult> {
-  const apiKey = (process.env.GROQ_API_KEY || "").trim();
-  if (!apiKey) {
-    throw new Error("callLLM(groq): GROQ_API_KEY is not set.");
-  }
-
+async function callProvider(p: ProviderConfig, systemPrompt: string, userPrompt: string, options: LLMOptions): Promise<LLMResult> {
   const cfg = {
     json: options.json !== false,
-    model: options.model || LLM.model,
+    model: options.model || p.model,
     temperature: typeof options.temperature === "number" ? options.temperature : LLM.temperature,
     max_tokens: options.max_tokens || LLM.max_tokens,
     max_retries: typeof options.max_retries === "number" ? options.max_retries : 4,
@@ -103,11 +197,11 @@ async function callGroq(systemPrompt: string, userPrompt: string, options: LLMOp
   let lastErr: string | null = null;
 
   for (let attempt = 1; attempt <= cfg.max_retries + 1; attempt++) {
-    const resp = await fetch(LLM.endpoint, {
+    const resp = await fetch(p.endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${p.apiKey}`,
       },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(LLM.request_timeout_ms),
@@ -117,21 +211,19 @@ async function callGroq(systemPrompt: string, userPrompt: string, options: LLMOp
 
     if (code === 200) {
       const ms = Date.now() - start;
-      let parsed: GroqResponse;
+      let parsed: ProviderResponse;
       try {
-        parsed = JSON.parse(body) as GroqResponse;
+        parsed = JSON.parse(body) as ProviderResponse;
       } catch {
-        throw new Error(`callLLM(groq): returned 200 but body is not JSON: ${body.slice(0, 300)}`);
+        throw new Error(`callLLM(${p.id}): returned 200 but body is not JSON: ${body.slice(0, 300)}`);
       }
-      const text = extractText(parsed);
-      const json = cfg.json ? safeParseJson(text) : null;
+      const text = extractText(parsed, p.id);
+      const json = cfg.json ? safeParseJson(text, p.id) : null;
       const usage = parsed.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-      console.log(
-        `[llm] ${cfg.label || cfg.model} [groq] OK attempt=${attempt} ms=${ms} tokens=${usage.total_tokens || 0}`
-      );
+      console.log(`[llm] ${cfg.label || cfg.model} [${p.id}] OK attempt=${attempt} ms=${ms} tokens=${usage.total_tokens || 0}`);
       return {
         ok: true,
-        provider: "groq",
+        provider: p.id,
         json,
         text,
         model: parsed.model || cfg.model,
@@ -147,48 +239,47 @@ async function callGroq(systemPrompt: string, userPrompt: string, options: LLMOp
 
     lastErr = `HTTP ${code}: ${body.slice(0, 300)}`;
 
-    // TPD (tokens per day) errors won't reset within the retry window — bail immediately.
-    if (code === 429 && /tokens per day|TPD|tokens_per_day/i.test(body)) {
-      throw new Error(
-        `callLLM(groq): Groq daily token limit reached for model ${cfg.model} (resets 00:00 UTC). Raw: ${body.slice(0, 200)}`
-      );
+    // Daily-quota-type errors won't reset within the retry window — bail to the
+    // next provider immediately instead of burning retries.
+    if (code === 429 && p.tpdErrorPattern.test(body)) {
+      throw new Error(`callLLM(${p.id}): daily quota reached for model ${cfg.model}. Raw: ${body.slice(0, 200)}`);
     }
 
     if (code === 429 || (code >= 500 && code < 600)) {
       if (attempt > cfg.max_retries) break;
       const waitMs = backoffMs(attempt, resp);
-      console.log(`[llm] ${cfg.label || cfg.model} [groq] ${code} attempt=${attempt} -> sleeping ${waitMs}ms before retry`);
+      console.log(`[llm] ${cfg.label || cfg.model} [${p.id}] ${code} attempt=${attempt} -> sleeping ${waitMs}ms before retry`);
       await sleep(waitMs);
       continue;
     }
 
-    throw new Error(`callLLM(groq): returned ${code} (non-retryable). ${lastErr}`);
+    throw new Error(`callLLM(${p.id}): returned ${code} (non-retryable). ${lastErr}`);
   }
 
-  throw new Error(`callLLM(groq): gave up after ${cfg.max_retries + 1} attempts. Last error: ${lastErr}`);
+  throw new Error(`callLLM(${p.id}): gave up after ${cfg.max_retries + 1} attempts. Last error: ${lastErr}`);
 }
 
 /* ===========================================================================
  * Internal helpers
  * ========================================================================= */
 
-interface GroqResponse {
+interface ProviderResponse {
   model?: string;
   choices?: Array<{ message?: { content?: string }; text?: string }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 }
 
-function extractText(groqResponse: GroqResponse): string {
-  const c = groqResponse.choices?.[0];
+function extractText(response: ProviderResponse, providerId: string): string {
+  const c = response.choices?.[0];
   if (!c) {
-    throw new Error(`callLLM: Groq response missing 'choices'. Body: ${JSON.stringify(groqResponse).slice(0, 300)}`);
+    throw new Error(`callLLM(${providerId}): response missing 'choices'. Body: ${JSON.stringify(response).slice(0, 300)}`);
   }
   if (c.message && typeof c.message.content === "string") return c.message.content;
   if (typeof c.text === "string") return c.text;
-  throw new Error(`callLLM: cannot find text in Groq response choice: ${JSON.stringify(c).slice(0, 300)}`);
+  throw new Error(`callLLM(${providerId}): cannot find text in response choice: ${JSON.stringify(c).slice(0, 300)}`);
 }
 
-function safeParseJson(text: string): Record<string, unknown> {
+function safeParseJson(text: string, providerId: string): Record<string, unknown> {
   try {
     return JSON.parse(text);
   } catch {
@@ -204,7 +295,7 @@ function safeParseJson(text: string): Record<string, unknown> {
       /* fall through */
     }
   }
-  throw new Error(`callLLM: model returned non-JSON despite json mode: ${text.slice(0, 300)}`);
+  throw new Error(`callLLM(${providerId}): model returned non-JSON despite json mode: ${text.slice(0, 300)}`);
 }
 
 function backoffMs(attempt: number, resp: Response): number {
@@ -223,7 +314,8 @@ function sleep(ms: number): Promise<void> {
 
 /* ===========================================================================
  * Token usage ledger — backed by the `token_usage` table, keyed by UTC date
- * because Groq's free-tier daily token quota resets at 00:00 UTC.
+ * and provider id. Each provider/key gets an independent daily quota because
+ * free-tier limits are tied to the API key, not the model.
  * ========================================================================= */
 
 function utcDateString(): string {
@@ -234,36 +326,36 @@ function utcDateString(): string {
   return `${y}-${m}-${dd}`;
 }
 
-export async function tokensUsedToday(provider: string): Promise<number> {
+export async function tokensUsedToday(providerId: string): Promise<number> {
   if (!db) return 0;
   const date = utcDateString();
   const rows = await db
     .select({ totalTokens: tokenUsage.totalTokens })
     .from(tokenUsage)
-    .where(and(eq(tokenUsage.date, date), eq(tokenUsage.provider, provider)));
+    .where(and(eq(tokenUsage.date, date), eq(tokenUsage.provider, providerId)));
   return rows[0]?.totalTokens ?? 0;
 }
 
-export async function requestsToday(provider: string): Promise<number> {
+export async function requestsToday(providerId: string): Promise<number> {
   if (!db) return 0;
   const date = utcDateString();
   const rows = await db
     .select({ requests: tokenUsage.requests })
     .from(tokenUsage)
-    .where(and(eq(tokenUsage.date, date), eq(tokenUsage.provider, provider)));
+    .where(and(eq(tokenUsage.date, date), eq(tokenUsage.provider, providerId)));
   return rows[0]?.requests ?? 0;
 }
 
-async function recordTokenUsage(provider: string, totalTokens: number): Promise<void> {
+async function recordTokenUsage(providerId: string, totalTokens: number): Promise<void> {
   if (!db) return;
   const date = utcDateString();
-  const used = await tokensUsedToday(provider);
-  const reqs = await requestsToday(provider);
+  const used = await tokensUsedToday(providerId);
+  const reqs = await requestsToday(providerId);
   await db
     .insert(tokenUsage)
     .values({
       date,
-      provider,
+      provider: providerId,
       totalTokens: used + (Number(totalTokens) || 0),
       requests: reqs + 1,
       updatedAt: new Date(),
@@ -278,20 +370,20 @@ async function recordTokenUsage(provider: string, totalTokens: number): Promise<
     });
 }
 
-/** Daily token ceiling for Groq, read from config.GROQ_DAILY_TOKEN_CEILING (default 90000). 0 = no ceiling. */
-export async function dailyTokenCeiling(provider: string): Promise<number> {
-  if (provider !== "groq") return 0;
-  if (!db) return 90000;
-  const rows = await db.select({ value: config.value }).from(config).where(eq(config.key, "GROQ_DAILY_TOKEN_CEILING"));
+/** Daily token ceiling for a provider id, read from config.<ID_UPPER>_DAILY_TOKEN_CEILING. 0 = no ceiling. */
+export async function dailyTokenCeiling(providerId: string, dflt: number): Promise<number> {
+  if (!db) return dflt;
+  const configKey = `${providerId.toUpperCase()}_DAILY_TOKEN_CEILING`;
+  const rows = await db.select({ value: config.value }).from(config).where(eq(config.key, configKey));
   const raw = rows[0]?.value;
-  if (raw === undefined || raw === "") return 90000;
+  if (raw === undefined || raw === "") return dflt;
   const n = parseFloat(raw);
-  return isNaN(n) ? 90000 : n;
+  return isNaN(n) ? dflt : n;
 }
 
-export async function overDailyCeiling(provider: string): Promise<boolean> {
-  const ceil = await dailyTokenCeiling(provider);
+export async function overDailyCeiling(providerId: string, dflt: number): Promise<boolean> {
+  const ceil = await dailyTokenCeiling(providerId, dflt);
   if (!ceil || ceil <= 0) return false;
-  const used = await tokensUsedToday(provider);
+  const used = await tokensUsedToday(providerId);
   return used >= ceil;
 }
