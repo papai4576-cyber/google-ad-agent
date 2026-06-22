@@ -45,6 +45,9 @@ const RULE_DEFAULTS = {
   EXT_HIGH_SPEND: 50,
   MIN_VIABLE_CONVERSIONS: 10,
   MIN_BUDGET_CPC_MULTIPLE: 5,
+  BID_OPP_MIN_CLICKS: 10,
+  BID_OPP_MIN_CONV: 3,
+  BID_OPP_INCREASE_PCT: 0.2,
 };
 
 export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnalystSpec<QualityStructureData>> {
@@ -67,7 +70,17 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
       "Quantify where useful: raising QS by ~2 points typically cuts CPC ~15-20%. Structural findings are usually P2/P3 — be " +
       "concrete about the restructure: name the split, the consolidation, or the ad to add. For extension gaps, propose CONCRETE " +
       "starting copy: 4-6 sitelink texts, 6-8 callouts, or 1-2 structured-snippet headers+values — tailored to the campaign's " +
-      "offering, within Google length limits (sitelink text <= 25 chars).",
+      "offering, within Google length limits (sitelink text <= 25 chars).\n\n" +
+      'For sitelink findings (id prefixes "extension-no-extensions-account", "extension-no-sitelinks-", "extension-few-sitelinks-"): ' +
+      "ALSO populate `proposed_changes` with one entry per NEW sitelink you propose (4-6 for no-sitelinks, enough to reach 4 total " +
+      'for few-sitelinks): {"type":"add_sitelink","params":{"campaign_id":"<target.id>","link_text":"<=25 chars","description1":' +
+      '"<=90 chars optional","description2":"<=90 chars optional","final_url":"<the URL given in this finding\'s evidence as ' +
+      '\'campaign_final_url\'>"}}. If evidence has no campaign_final_url, leave proposed_changes as [] for that finding (cannot ' +
+      "auto-create a sitelink without a destination URL).\n" +
+      'For callout findings (id prefix "extension-no-callouts-"): ALSO populate `proposed_changes` with one entry per callout: ' +
+      '{"type":"add_callout","params":{"campaign_id":"<target.id>","text":"<=25 chars"}}.\n' +
+      'Structured-snippet findings ("extension-no-snippets-") and weak-extension-copy findings ("extension-weak-ext-") have no ' +
+      "executable change available yet — leave proposed_changes as [] for those.",
     brainCategories: ["structure", "copy", "landing_page", "brand"],
     brainLimit: 4,
     data,
@@ -110,10 +123,36 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
   };
 }
 
-function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; cfg: Record<string, number> }): Candidate[] {
+/**
+ * Best-effort campaign -> a real, currently-live final URL, derived from this
+ * campaign's own ads (never invented) — sitelink assets require their own
+ * `final_url`, so extension findings need a concrete URL to be auto-executable.
+ * Campaigns with no ENABLED ad carrying an https final URL get no entry, and
+ * their extension findings are instructed to leave `proposed_changes` empty.
+ */
+function buildCampaignFinalUrlMap(data: QualityStructureData): Record<string, string> {
+  const agToCampaign: Record<string, string> = {};
+  for (const ag of data.adGroups) agToCampaign[String(ag.adGroupId)] = String(ag.campaignId);
+
+  const out: Record<string, string> = {};
+  for (const ad of data.ads) {
+    const cid = agToCampaign[String(ad.adGroupId)];
+    if (!cid || out[cid]) continue;
+    const urls = Array.isArray(ad.finalUrls) ? ad.finalUrls : [];
+    const url = urls.find((u) => typeof u === "string" && u.startsWith("http"));
+    if (url) out[cid] = url;
+  }
+  return out;
+}
+
+function detectQualityStructure(
+  data: QualityStructureData,
+  ctx: { cur: string; cfg: Record<string, number>; targets?: { target_cpa?: number } }
+): Candidate[] {
   const cfg = ctx.cfg;
   const cur = ctx.cur;
   const out: Candidate[] = [];
+  const campaignFinalUrl = buildCampaignFinalUrlMap(data);
 
   /* ---- Quality Score (ported from QualityScoreInspector) ---- */
 
@@ -208,6 +247,71 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
         `components adRel=${k.creativeQuality || "?"}, LP=${k.postClickQuality || "?"}, expCTR=${k.searchPredictedCtr || "?"}`,
         `${k.clicks} clicks, ${k.conversions} conv`,
         `ad group ${k.adGroupName}`,
+      ],
+    });
+  }
+
+  /* ---- Keyword-level bid opportunity (v2 addition — no v1 equivalent).
+   *
+   * `rank-locked-*` (performanceBudgetAnalyst.ts) is campaign-scoped, but Google Ads bids are set
+   * per-keyword — a campaign-level "rank lost" signal isn't a single mutate target, so that finding
+   * stays manual permanently. This is the keyword-level equivalent that IS a single mutate target:
+   * a keyword that's already converting profitably (CPA at or under target) on Manual CPC / Enhanced
+   * CPC — i.e. a strategy where the bid we set is the bid that's used, not an algorithmic suggestion —
+   * with enough volume to trust the comparison. Proposes raising its bid by BID_OPP_INCREASE_PCT
+   * (default +20%, validated against the global MAX_BID_SHIFT_PCT cap of +30% again in implementation.ts).
+   * Deterministic end to end (no LLM-authored copy involved), so proposed_changes is built directly here. */
+
+  const campaignById = new Map<string, CampaignRow>();
+  for (const c of data.campaigns) campaignById.set(String(c.campaignId), c);
+  const MANUAL_STRATEGIES = ["MANUAL_CPC", "ENHANCED_CPC"];
+
+  for (const k of data.keywords) {
+    const campaign = campaignById.get(String(k.campaignId));
+    const strat = String(campaign?.biddingStrategy || "").toUpperCase();
+    if (!MANUAL_STRATEGIES.some((s) => strat.includes(s))) continue;
+
+    const clicks = Number(k.clicks) || 0;
+    const conv = Number(k.conversions) || 0;
+    const cost = micros(k.costMicros);
+    const currentBidMicros = Number(k.cpcBidMicros) || 0;
+    if (clicks < cfg.bid_opp_min_clicks || conv < cfg.bid_opp_min_conv || currentBidMicros <= 0) continue;
+
+    const cpa = conv > 0 ? cost / conv : 0;
+    const targetCpa = Number(ctx.targets?.target_cpa) || 0;
+    if (targetCpa <= 0 || cpa > targetCpa) continue; // only raise bids where we're already efficient
+
+    const newBidMicros = Math.round(currentBidMicros * (1 + cfg.bid_opp_increase_pct));
+    out.push({
+      id: `bid-opportunity-${k.keywordId}`,
+      category: "bidding",
+      severity: "P2",
+      magnitude: "medium",
+      confidence: "high",
+      effort: "easy",
+      metric: "conversions",
+      direction: "up",
+      target: { type: "keyword", id: String(k.keywordId), name: k.text },
+      hint:
+        `Keyword "${k.text}" (ad group "${k.adGroupName}") converts at CPA ${cur}${cpa.toFixed(0)} vs target ${cur}${targetCpa.toFixed(0)} ` +
+        `on Manual/Enhanced CPC (${campaign?.biddingStrategy}) — raise its bid from ${cur}${(currentBidMicros / 1e6).toFixed(2)} to ` +
+        `${cur}${(newBidMicros / 1e6).toFixed(2)} (+${(cfg.bid_opp_increase_pct * 100).toFixed(0)}%) to capture more volume at the same efficiency.`,
+      evidence: [
+        `CPA ${cur}${cpa.toFixed(2)} <= target ${cur}${targetCpa.toFixed(2)}`,
+        `${clicks} clicks, ${conv} conv`,
+        `current bid ${cur}${(currentBidMicros / 1e6).toFixed(2)}`,
+        `bidding strategy ${campaign?.biddingStrategy || strat}`,
+      ],
+      proposedChanges: [
+        {
+          type: "adjust_bid",
+          params: {
+            ad_group_id: String(k.adGroupId),
+            criterion_id: String(k.keywordId),
+            current_cpc_bid_micros: currentBidMicros,
+            new_cpc_bid_micros: newBidMicros,
+          },
+        },
       ],
     });
   }
@@ -443,7 +547,12 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
         direction: "up",
         target: { type: "campaign", id: String(top.campaignId), name: top.campaignName },
         hint: "No extensions found anywhere in the account — add sitelinks, callouts and structured snippets to the top campaigns; the cheapest CTR lift available. Propose 4-6 specific Baidyanath sitelinks for this campaign.",
-        evidence: ["0 extensions across all campaigns", `top campaign spend ${cur}${topSpend.toFixed(0)}`, `ctr ${topCtr}%`],
+        evidence: [
+          "0 extensions across all campaigns",
+          `top campaign spend ${cur}${topSpend.toFixed(0)}`,
+          `ctr ${topCtr}%`,
+          ...(campaignFinalUrl[String(top.campaignId)] ? [`campaign_final_url: ${campaignFinalUrl[String(top.campaignId)]}`] : []),
+        ],
       });
     }
   } else {
@@ -484,7 +593,13 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           hint: pmax
             ? `No sitelinks on Performance Max campaign "${c.campaignName}". Add asset-level sitelinks via Google Ads → Campaigns → Assets. Propose 4-6 specific Baidyanath product sitelinks (e.g. product category, offer, bestseller) tailored to this campaign.`
             : `No sitelinks on "${c.campaignName}" — the single biggest CTR lift for Search. Propose 4-6 specific Baidyanath sitelinks tailored to what this campaign promotes. Each must be ≤25 chars.`,
-          evidence: ["0 sitelinks", `channel=${c.channelType || "SEARCH"}`, `spend ${cur}${spend.toFixed(0)}`, perfCtx],
+          evidence: [
+            "0 sitelinks",
+            `channel=${c.channelType || "SEARCH"}`,
+            `spend ${cur}${spend.toFixed(0)}`,
+            perfCtx,
+            ...(campaignFinalUrl[String(c.campaignId)] ? [`campaign_final_url: ${campaignFinalUrl[String(c.campaignId)]}`] : []),
+          ],
         });
       } else if (n("SITELINK") < 4) {
         out.push({
@@ -498,7 +613,12 @@ function detectQualityStructure(data: QualityStructureData, ctx: { cur: string; 
           direction: "up",
           target: tgt,
           hint: `Only ${n("SITELINK")} sitelinks on "${c.campaignName}" — propose additional Baidyanath-specific sitelink texts to reach 4+ (each ≤25 chars).`,
-          evidence: [`${n("SITELINK")} sitelinks (need 4+)`, `spend ${cur}${spend.toFixed(0)}`, perfCtx],
+          evidence: [
+            `${n("SITELINK")} sitelinks (need 4+)`,
+            `spend ${cur}${spend.toFixed(0)}`,
+            perfCtx,
+            ...(campaignFinalUrl[String(c.campaignId)] ? [`campaign_final_url: ${campaignFinalUrl[String(c.campaignId)]}`] : []),
+          ],
         });
       }
 

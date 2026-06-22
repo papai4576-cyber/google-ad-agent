@@ -211,6 +211,7 @@ async function writeFindings(synthFindings: SynthFinding[], runDate: string): Pr
     brainSources: f.brain_sources,
     missingData: f.missing_data ?? [],
     alternativeExplanations: f.alternative_explanations ?? [],
+    proposedChanges: f.proposed_changes ?? [],
     status: "new",
   }));
 

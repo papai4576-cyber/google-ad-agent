@@ -53,7 +53,10 @@ export async function buildSearchIntelligenceAnalystSpec(): Promise<AnalystSpec<
       "  Group several related converting search terms into one recommendation per ad group. In the `action` field, " +
       "list the EXACT keywords to add (with [exact] brackets), plus a suggested starting bid (no more than +30% of the " +
       'ad group default per CLAUDE.md\'s safety rails). category="keywords", target.type="adgroup". Severity P1 if the ' +
-      "cluster represents > 5 conversions or cost > 5x target_cpa.\n\n" +
+      "cluster represents > 5 conversions or cost > 5x target_cpa. ALSO populate `proposed_changes` with one entry per " +
+      'keyword in the cluster: {"type":"add_keyword","params":{"ad_group_id":"<ad_group_id from the data row>","text":' +
+      '"<keyword text, no brackets>","match_type":"EXACT"}} — omit cpc_bid_micros (let it inherit the ad group default ' +
+      "bid). Use the EXACT ad_group_id value from the data row, never invent one.\n\n" +
       'SECTION 2 — NEGATIVE KEYWORDS (id prefix "add-negative-<id>"):\n' +
       "  Cluster zero-conversion wasted-spend terms into themes (e.g. \"informational queries containing 'how to'\", " +
       '"free / cheap variants", "wrong product line"). Pick the right scope: campaign-level negative if the theme is ' +
@@ -63,7 +66,11 @@ export async function buildSearchIntelligenceAnalystSpec(): Promise<AnalystSpec<
       'wasted spend saved over 30 days. category="keywords", target.type="campaign" or "adgroup". Severity P1 if combined ' +
       "cluster wasted spend > target_cpa x 5. The data also includes a separate \"junk-intent terms\" list (matched a " +
       "known irrelevant-intent pattern like \"jobs\"/\"how to\"/\"login\") — these should always get a finding regardless " +
-      "of spend amount, since that kind of intent is essentially never worth any spend on this account.\n\n" +
+      "of spend amount, since that kind of intent is essentially never worth any spend on this account. ALSO populate " +
+      '`proposed_changes` with one entry per negative term in the cluster: {"type":"add_negative","params":{"scope":' +
+      '"campaign"|"adgroup","scope_id":"<campaign_id or ad_group_id matching your chosen scope, from the data row>",' +
+      '"text":"<term, no brackets/dashes>","match_type":"EXACT"|"PHRASE"|"BROAD"}}. Use the EXACT campaign_id/ad_group_id ' +
+      "values from the data rows, never invent one.\n\n" +
       'SECTION 3 — SEARCH-TERM PATTERNS (id prefix "search-term-pattern-<id>"):\n' +
       "  Look at the overall query mix for: (1) intent buckets the account is winning/losing on — cite impression counts; " +
       "(2) structural gaps — a high-volume intent theme with no dedicated ad group, name the theme and recommend creating " +
@@ -134,9 +141,9 @@ function formatPromotableKeywords(d: SearchIntelligenceData): string {
 
   lines.push("=== SECTION 1: PROMOTABLE SEARCH TERMS (converting, not yet exact-match) ===");
   lines.push(`${candidates.length} total candidates. Showing top ${top.length} by conversions:`);
-  lines.push("term | clicks | spend | conversions | ad_group_id | ad_group");
+  lines.push("term | clicks | spend | conversions | ad_group_id | ad_group | campaign_id");
   for (const t of top) {
-    lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.conversions} | ${t.adGroupId} | ${t.adGroupName}`);
+    lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.conversions} | ${t.adGroupId} | ${t.adGroupName} | ${t.campaignId}`);
   }
   if (top.length === 0) {
     lines.push("");
@@ -183,9 +190,9 @@ function formatNegativeCandidates(d: SearchIntelligenceData): string {
       `${stillCandidates.length} still candidates (${cur}${totalWastedAll.toFixed(2)} wasted).`
   );
   lines.push(`Showing top ${top.length} candidates (${cur}${totalWastedTop.toFixed(2)} of those) by wasted spend:`);
-  lines.push("term | clicks | spend | ad_group_id | ad_group");
+  lines.push("term | clicks | spend | ad_group_id | ad_group | campaign_id");
   for (const t of top) {
-    lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.adGroupId} | ${t.adGroupName}`);
+    lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.adGroupId} | ${t.adGroupName} | ${t.campaignId}`);
   }
   if (top.length === 0) {
     lines.push("");
@@ -202,9 +209,9 @@ function formatNegativeCandidates(d: SearchIntelligenceData): string {
   if (junkTerms.length > 0) {
     lines.push("");
     lines.push(`Junk-intent terms (flag regardless of spend — matched a known irrelevant-intent pattern, e.g. "jobs"/"how to"/"login"):`);
-    lines.push("term | clicks | spend | ad_group_id | ad_group");
+    lines.push("term | clicks | spend | ad_group_id | ad_group | campaign_id");
     for (const t of junkTerms) {
-      lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.adGroupId} | ${t.adGroupName}`);
+      lines.push(`"${t.term}" | ${t.clicks} | ${cur}${micros(t.costMicros).toFixed(2)} | ${t.adGroupId} | ${t.adGroupName} | ${t.campaignId}`);
     }
   }
   return lines.join("\n");

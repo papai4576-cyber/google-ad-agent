@@ -6,7 +6,17 @@ import { pendingChanges } from "@/db/schema";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/pending-changes — polled by the Google Ads Script's execute mode.
+ * GET /api/pending-changes
+ *
+ * @deprecated Retired by the Google Ads API migration — implementation.ts
+ * now calls googleAdsClient.ts directly instead of queuing rows here for the
+ * Google Ads Script's execute mode to poll (which has itself been removed
+ * from google_ads_script.js). Left functional, not deleted, as a rollback
+ * path: reverting implementation.ts and restoring the script's execute mode
+ * would make this route load-bearing again. `pending_changes` rows are now
+ * written and resolved synchronously by implementation.ts as a local audit
+ * trail (status `dry_run` | `done` | `error`) — nothing currently polls this
+ * route.
  *
  * Returns all `queued` pending_changes rows and atomically flips them to
  * `executing` so a second poll before /api/execute-result reports back

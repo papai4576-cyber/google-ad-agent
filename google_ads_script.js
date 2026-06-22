@@ -15,10 +15,14 @@
  * Plain HTTPS calls to a public API route have no such restriction.
  *
  * ---------------------------------------------------------------------------
- * Two modes:
- *   collect  → fetch + POST to /api/ingest
- *   execute  → polls /api/pending-changes, applies mutations via AdsApp,
- *              reports back to /api/execute-result
+ * Collect mode only — fetch + POST to /api/ingest.
+ *
+ * Execute mode (queue-poll-and-mutate via AdsApp) was retired when the
+ * execute/mutation path moved to the real Google Ads API (see
+ * web/src/agents/implementation.ts + googleAdsClient.ts) — approving a
+ * recommendation on the dashboard now mutates the account directly via the
+ * API, no Ads Script polling step involved. /api/pending-changes and
+ * /api/execute-result are kept (marked @deprecated) for rollback only.
  *
  * ---------------------------------------------------------------------------
  * Setup (one-time):
@@ -35,7 +39,7 @@ const CONFIG = {
   APPS_SCRIPT_WEBHOOK_URL: 'https://web-seven-rho-96.vercel.app/api/ingest',
   INGEST_SECRET:           '873f1fe208b9a445b34ecad0aaf0650931b7da98cc9d91e6',
 
-  MODE:         'collect',  // 'collect' | 'execute'
+  MODE:         'collect',  // 'collect' only — execute mode retired, see header comment
   COLLECT_MODE: 'daily',    // 'daily' (LAST_30_DAYS) | 'weekly' (LAST_90_DAYS)
 
   DATE_RANGES: {
@@ -74,9 +78,8 @@ function main() {
 
   switch (CONFIG.MODE) {
     case 'collect': return runCollect_();
-    case 'execute': return runExecute_();
     default:
-      throw new Error(`Unknown MODE: ${CONFIG.MODE}. Use 'collect' or 'execute'.`);
+      throw new Error(`Unknown MODE: ${CONFIG.MODE}. Only 'collect' is supported (execute mode retired, see header comment).`);
   }
 }
 
@@ -561,96 +564,6 @@ function fetchNegativeKeywords_(runDate) {
   }
 
   return rows;
-}
-
-/* ===========================================================================
- * EXECUTE MODE — Phase 12 placeholder.
- * ========================================================================= */
-/* ===========================================================================
- * EXECUTE MODE (Phase H) — pull the approved-change queue from
- * /api/pending-changes, apply each via AdsApp, and report results back to
- * /api/execute-result for the change_log.
- *
- * Safety: the API only queues a change (status='queued') when its config
- * DRY_RUN=false (and only after the dashboard Approvals gate). So anything we
- * pull here is human-approved and rail-validated. We still wrap every change
- * in its own try/catch so one failure never blocks the rest.
- * ========================================================================= */
-function runExecute_() {
-  log_('Execute mode — polling /api/pending-changes…');
-
-  const url = _apiUrl_('pending-changes') + '?secret=' + encodeURIComponent(CONFIG.INGEST_SECRET);
-  const resp = UrlFetchApp.fetch(url, { method: 'get', followRedirects: true, muteHttpExceptions: true });
-  let parsed;
-  try { parsed = JSON.parse(resp.getContentText()); }
-  catch (e) { throw new Error('Bad queue response: ' + resp.getContentText().slice(0, 300)); }
-  if (!parsed.ok) throw new Error('Queue error: ' + (parsed.error || 'unknown'));
-
-  const changes = parsed.changes || [];
-  log_(`Pulled ${changes.length} queued change(s).`);
-  if (changes.length === 0) { log_('Nothing to execute.'); return; }
-
-  const results = [];
-  for (const ch of changes) {
-    try {
-      applyChange_(ch);
-      results.push({ change_id: ch.change_id, success: true });
-      log_(`  [OK]   ${ch.change_type} ${ch.target_type} ${ch.target_id} (${ch.before_value} → ${ch.after_value})`);
-    } catch (e) {
-      results.push({ change_id: ch.change_id, success: false, error: String(e.message || e).slice(0, 300) });
-      log_(`  [FAIL] ${ch.change_type} ${ch.target_id}: ${e.message || e}`);
-    }
-  }
-
-  // Report results back so the API updates pending_changes + change_log.
-  const post = UrlFetchApp.fetch(_apiUrl_('execute-result'), {
-    method: 'post', contentType: 'application/json', followRedirects: true, muteHttpExceptions: true,
-    payload: JSON.stringify({
-      secret: CONFIG.INGEST_SECRET, run_date: todayString_(), results: results,
-    }),
-  });
-  log_(`Reported ${results.length} result(s): ${post.getContentText().slice(0, 200)}`);
-}
-
-/** Build a sibling API URL from APPS_SCRIPT_WEBHOOK_URL (…/api/ingest -> …/api/<name>). */
-function _apiUrl_(name) {
-  return CONFIG.APPS_SCRIPT_WEBHOOK_URL.replace(/\/api\/[^/?]+\/?$/, '/api/' + name);
-}
-
-function applyChange_(ch) {
-  if (ch.change_type === 'add_negative') {
-    const term = ch.params && ch.params.term;
-    if (!term) throw new Error('missing term');
-    const text = '"' + String(term).trim() + '"';   // phrase match
-    if (ch.target_type === 'adgroup') {
-      const ag = adGroupById_(ch.target_id);
-      if (!ag) throw new Error('ad group ' + ch.target_id + ' not found');
-      ag.createNegativeKeyword(text);
-    } else {
-      const c = campaignById_(ch.target_id);
-      if (!c) throw new Error('campaign ' + ch.target_id + ' not found');
-      c.createNegativeKeyword(text);
-    }
-    return;
-  }
-  if (ch.change_type === 'adjust_budget') {
-    const c = campaignById_(ch.target_id);
-    if (!c) throw new Error('campaign ' + ch.target_id + ' not found');
-    const amount = parseFloat(ch.after_value);
-    if (!(amount > 0)) throw new Error('bad budget amount ' + ch.after_value);
-    c.getBudget().setAmount(amount);   // account-currency units
-    return;
-  }
-  throw new Error('unsupported change_type ' + ch.change_type);
-}
-
-function campaignById_(id) {
-  const it = AdsApp.campaigns().withIds([String(id)]).get();
-  return it.hasNext() ? it.next() : null;
-}
-function adGroupById_(id) {
-  const it = AdsApp.adGroups().withIds([String(id)]).get();
-  return it.hasNext() ? it.next() : null;
 }
 
 /* ===========================================================================

@@ -63,6 +63,21 @@ export interface EstimatedImpact {
   magnitude: Magnitude;
 }
 
+/**
+ * A single structured, machine-executable change an analyst is recommending —
+ * distinct from `action` (free-text prose for the human reading the dashboard).
+ * `implementation.ts` reads THIS field when implementing an approved 'auto'
+ * finding, instead of re-deriving the change independently (which previously
+ * caused `add_negatives` to execute a different set of terms than what the
+ * human actually saw and approved) or trying to parse the prose `action` text.
+ * `params` shape depends on `type` — see implementation.ts/googleAdsClient.ts
+ * for what each type expects.
+ */
+export interface ProposedChange {
+  type: "add_keyword" | "add_negative" | "add_sitelink" | "add_callout" | "create_rsa" | "adjust_bid" | "adjust_budget";
+  params: Record<string, unknown>;
+}
+
 /** A single finding, in the universal schema shape returned by an LLM. */
 export interface Finding {
   id: string;
@@ -82,6 +97,8 @@ export interface Finding {
   missing_data?: string[];
   /** Optional — plausible alternative causes for the same observation. Populated by analysts or the recommendation validator. */
   alternative_explanations?: string[];
+  /** Optional — structured, executable version of `action`. Required for a finding to actually auto-implement; see ProposedChange. Default []. */
+  proposed_changes?: ProposedChange[];
 }
 
 /** A finding that has entered the synthesis pipeline (agent/run metadata attached). */
@@ -162,6 +179,7 @@ interface RawFinding {
   brain_sources?: unknown;
   missing_data?: unknown;
   alternative_explanations?: unknown;
+  proposed_changes?: unknown;
 }
 
 export function validateFinding(f: unknown): string[] {
@@ -216,5 +234,30 @@ export function normalizeFinding(f: RawFinding): Finding {
     alternative_explanations: Array.isArray(f.alternative_explanations)
       ? f.alternative_explanations.slice(0, 4).map((e) => String(e).slice(0, 200))
       : [],
+    proposed_changes: normalizeProposedChanges(f.proposed_changes),
   };
+}
+
+const VALID_CHANGE_TYPES = new Set<ProposedChange["type"]>([
+  "add_keyword",
+  "add_negative",
+  "add_sitelink",
+  "add_callout",
+  "create_rsa",
+  "adjust_bid",
+  "adjust_budget",
+]);
+
+/** Drops malformed entries rather than letting garbage through to implementation.ts — never throws. */
+export function normalizeProposedChanges(raw: unknown): ProposedChange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProposedChange[] = [];
+  for (const entry of raw.slice(0, 10)) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as { type?: unknown; params?: unknown };
+    if (typeof e.type !== "string" || !VALID_CHANGE_TYPES.has(e.type as ProposedChange["type"])) continue;
+    if (!e.params || typeof e.params !== "object") continue;
+    out.push({ type: e.type as ProposedChange["type"], params: e.params as Record<string, unknown> });
+  }
+  return out;
 }

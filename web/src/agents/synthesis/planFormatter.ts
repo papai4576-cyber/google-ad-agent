@@ -10,7 +10,7 @@
  * sorted P1 first then by score desc, matching the v1 ordering exactly.
  */
 
-import type { SynthFinding } from "../schema";
+import type { SynthFinding, ProposedChange } from "../schema";
 import { deriveActionMeta } from "./actionMeta";
 
 export interface ActionPlanRow {
@@ -30,6 +30,7 @@ export interface ActionPlanRow {
   missingData: string[];
   alternativeExplanations: string[];
   validationFlags: string[];
+  proposedChanges: ProposedChange[];
   score: number;
   status: "pending";
 }
@@ -66,6 +67,7 @@ export function formatActionPlan(scored: SynthFinding[], runDate: string): Actio
       missingData: f.missing_data ?? [],
       alternativeExplanations: f.alternative_explanations ?? [],
       validationFlags: f.validation_flags ?? [],
+      proposedChanges: f.proposed_changes ?? [],
       score: Number(f.score) || 0,
       status: "pending",
     };

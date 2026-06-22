@@ -16,7 +16,7 @@ A fully autonomous, strategically intelligent multi-agent system that:
 3. Grounds every analysis in **The Brain** — a living knowledge base of strategy resources and curated PPC insight
 4. Synthesizes findings into a prioritized P1/P2/P3 action plan with `action_category` (auto/manual/insight) and `action_type`
 5. Surfaces the action plan on a Next.js web dashboard for human approval (no more Sheets, no more Slack reaction-polling)
-6. Executes only approved `auto` changes via the Google Ads Script's execute mode, under the same safety rails as v1
+6. Executes only approved `auto` changes via the real Google Ads API (`web/src/agents/googleAdsClient.ts`), under the same safety rails as v1 — approving on the dashboard is now sufficient; no manual follow-through in the Ads UI (see "Execute-mode migration" below)
 7. Reports every change back via a change log, visible on the dashboard, with optional Slack notification
 
 **Total infrastructure cost: ~$0/month** (Groq free tier, Google Ads Scripts free, Vercel free tier, Supabase/Neon free Postgres, GitHub Actions free for own repo)
@@ -48,8 +48,8 @@ Next.js API routes (Vercel, free)  ───────────────
    │  /api/ingest          — writes raw snapshot tables           │
    │  /api/action-plan     — read for dashboard                   │
    │  /api/approve         — approve/reject from dashboard        │
-   │  /api/pending-changes — GET, polled by Ads Script execute mode│
-   │  /api/execute-result  — POST, results from Ads Script        │
+   │  /api/pending-changes — @deprecated, see below                │
+   │  /api/execute-result  — @deprecated, see below                │
    ▼                                                               │
 Postgres (Supabase or Neon, free tier)                             │
    - raw snapshot tables (campaigns, keywords, ads, search_terms…) │
@@ -65,8 +65,10 @@ GitHub Actions (cron, free)  ─────────────────
        cross-agent patterns → business-rules gate → recommendation
        validator agent → impact scoring → action_category/action_type →
        action_plan → optional Slack digest notification
-   - "hourly-implementation" (hourly): derive pending_changes from
-       newly approved 'auto' action_plan rows
+   - "hourly-implementation" (hourly): for newly approved 'auto'
+       action_plan rows, calls the Google Ads API DIRECTLY via
+       googleAdsClient.ts (see "Execute-mode migration" below) —
+       no queue/poll handshake with a script anymore
    - "weekly-brain-learning" (Mondays 07:00 UTC): autonomous Brain
        Learning Agent — discovers candidate brain_entries from account
        data, approved-findings feedback, and Groq compound-beta web
@@ -79,10 +81,15 @@ Next.js Dashboard (Vercel, free) — password-gated
    - /brain           — manage strategy knowledge entries
    - /config          — edit RULE_* / targets / safety rails
 
-Google Ads Script (execute mode)         [kept from v1 — repointed]
-   - polls GET /api/pending-changes (Bearer secret)
-   - applies adjust_budget / add_negative via AdsApp
-   - POST /api/execute-result
+Google Ads API (direct, see "Execute-mode migration" below)
+   - web/src/agents/googleAdsClient.ts — sole import point for the
+     `google-ads-api` package; called inline by implementation.ts
+     after the dashboard approval gate, no script/polling involved
+
+Google Ads Script (collect mode ONLY)    [kept from v1 — repointed]
+   - GAQL fetch → POST /api/ingest (Bearer secret)
+   - execute mode REMOVED (was: poll /api/pending-changes, apply via
+     AdsApp, POST /api/execute-result) — see "Execute-mode migration"
 ```
 
 **Why GitHub Actions for the agent pipeline:** v1's 6-minute Apps Script ceiling forced heavy rules-engine optimization. GitHub Actions jobs run up to 6 hours, free for the user's own repo — removes the time pressure and lets analysis be more thorough.
@@ -90,6 +97,66 @@ Google Ads Script (execute mode)         [kept from v1 — repointed]
 **Why Postgres:** real relational queries for the dashboard, `jsonb` for evidence/headlines/key_points, room for `pgvector` later for Brain semantic search.
 
 **Why no Slack reaction-polling:** the dashboard is the approval surface (buttons → `/api/approve`). Slack is now an optional one-way notification channel.
+
+---
+
+## Execute-mode migration — direct Google Ads API (June 2026)
+
+**What changed:** the execute side of this system (turning an approved `action_plan` row into a real account change) moved from `google_ads_script.js`'s queue-and-poll handshake (write `pending_changes` → script polls `/api/pending-changes` → applies via `AdsApp` → reports to `/api/execute-result`) to calling the real Google Ads API directly from `implementation.ts`, synchronously, the moment an item is approved and the hourly job runs. **Collect mode is completely unaffected** — the script still fetches GAQL data and POSTs to `/api/ingest` exactly as before.
+
+**Why:** before this, only `increase_budget` and `add_negatives` were `action_category: "auto"` — every other recommendation (new keywords, bid changes, extensions, ad copy) required the user to manually re-implement it in the Ads UI after approving it on the dashboard, defeating the point of an "approval gate." Simply swapping `AdsApp` calls for API calls would not have fixed this on its own — there was no structured, machine-readable channel for "the exact keyword text" or "the exact sitelink copy," only free-text `action` prose written for a human. That gap is what `proposed_changes` (below) fixes.
+
+### `proposed_changes` — the structured execution contract
+
+`Finding` (`web/src/agents/schema.ts`) carries an optional `proposed_changes?: ProposedChange[]`, where `ProposedChange = { type: "add_keyword" | "add_negative" | "add_sitelink" | "add_callout" | "create_rsa" | "adjust_bid" | "adjust_budget", params: Record<string, unknown> }`. This is distinct from `action` (free-text prose for the human reading the dashboard, capped at 1000 chars) — `implementation.ts` reads `proposed_changes` to actually execute a change, never parses `action`. `normalizeProposedChanges()` validates/drops malformed entries the same defensive way the rest of `schema.ts` does; never throws. Matching nullable `jsonb` columns exist on both `findings` and `action_plan` (`web/scripts/migrate-proposed-changes-column.ts`), copied through in `planFormatter.ts` the same way `missing_data` already flows from finding to action-plan row.
+
+Two ways a finding gets `proposed_changes` populated:
+- **LLM-authored** (the default): the analyst's prompt instructs the LLM to emit a `proposed_changes` array, using real ids/URLs copied from the DATA section (never invented) — see Section 1/2 of `searchIntelligenceAnalyst.ts` (`add_keyword`/`add_negative`), the sitelink/callout instructions in `qualityStructureAnalyst.ts` (`add_sitelink`/`add_callout`), and the copy-finding instructions in `audienceCopyAnalyst.ts` (`create_rsa`). `runAnalyst.ts`'s shared `buildSystemPrompt`/`buildRuleSystemPrompt` document the field generically; each analyst's own `instructions` string spells out the exact shape for its own id prefixes and tells the LLM to leave `proposed_changes: []` for everything else.
+- **Deterministic** (pure arithmetic, no LLM involved): `Candidate.proposedChanges` (`runAnalyst.ts`) lets a rule-based `detect()` function build the structured change itself when it's pure math on already-known data — used by the new keyword-level bid-opportunity rule (`qualityStructureAnalyst.ts`, see below). When set, it takes precedence over anything the LLM writes for that candidate (`runRuleBasedAnalyst`'s merge step: `c.proposedChanges ?? normalizeProposedChanges(p.proposed_changes)`), since there's no reason to trust an LLM to re-derive a number `detect()` already computed correctly.
+
+### `web/src/agents/googleAdsClient.ts` — the sole Google Ads API touchpoint
+
+Mirrors how `google_ads_script.js` was the sole `AdsApp` touchpoint. Uses the `google-ads-api` npm package. Exports one function per mutation: `setCampaignBudget`, `addNegativeKeyword`, `setKeywordBid`, `addKeyword`, `addSitelinks`, `addCallouts`, `createResponsiveSearchAd` — each returns `{ success, resourceName?, error? }` and never throws for an expected API error (only for missing env vars, which fails closed immediately). `createResponsiveSearchAd` always creates the ad `status: PAUSED` — **non-negotiable**: approval authorizes *creation*, not *going live*; enabling new ad copy is a deliberate separate step this migration does not automate.
+
+Required env vars (added to `.env.local`; **still needs to be added to Vercel and GitHub Actions secrets** before `hourly-implementation`'s cron can use the live API path in production — confirmed working locally only as of this migration):
+```
+GOOGLE_ADS_CLIENT_ID
+GOOGLE_ADS_CLIENT_SECRET
+GOOGLE_ADS_DEVELOPER_TOKEN
+GOOGLE_ADS_REFRESH_TOKEN
+GOOGLE_ADS_LOGIN_CUSTOMER_ID
+GOOGLE_ADS_CUSTOMER_ID
+```
+Generated once via `web/scripts/generate-refresh-token.ts` (one-time local OAuth flow, never run in CI, never committed). The developer token started at Test Account access tier; reads against the real production account already work at that tier (verified live), mutate operations have not yet been verified live against the real account (see "Verification status" below) — Basic access may be required if mutate calls fail with a tier-related error.
+
+### `implementation.ts` rewrite
+
+`deriveChanges()` now reads `proposed_changes` for every action type except `increase_budget` (which keeps its original "always apply the configured max-cap regardless of what was recommended" logic unchanged — there's no fidelity gap there since the rule never claimed a specific number). This also fixed a pre-existing bug as a side effect: `add_negatives` used to independently re-derive its own top-N negative-keyword candidates from the raw `search_terms` table instead of using the LLM-curated list the human actually approved on the dashboard — it now reads the approved finding's `proposed_changes` directly. If an auto-eligible finding has empty `proposed_changes` for any type other than `increase_budget`, `implementation.ts` skips it with a logged reason rather than silently no-op'ing or falling back to old behavior (a deliberate regression guard).
+
+`persistChange()` is now synchronous: under `DRY_RUN=true` it short-circuits to an immediate simulated `change_log` row exactly as before; under `DRY_RUN=false` it calls the matching `googleAdsClient.ts` function inline and logs the real `MutateResult`. `pending_changes` is kept as a same-shape **local** audit table only (no longer polled by anything) — its status lifecycle simplified from `queued`/`executing`/`done`/`error` to `dry_run`/`done`/`error`; re-execution is blocked only on `status="done"` (a genuinely completed mutation), so a transient API error or a dry-run review can be retried on the next hourly pass.
+
+### Auto-scope expansion
+
+"Aggressive but goes live after approval" — the human approval gate (`action_plan.status='approved'`) remains the only checkpoint; once approved, the system acts with no further manual step (except `update_copy`, which only ever creates a paused ad). `actionMeta.ts` now routes these additional id prefixes to `action_category: "auto"`:
+
+| id prefix | agent | action_type | notes |
+|---|---|---|---|
+| `new-keyword-*` | Search Intelligence | `add_keywords` | was manual; Section 1's prompt now requires `proposed_changes` |
+| `extension-no-extensions-account`, `extension-no-sitelinks-*`, `extension-few-sitelinks-*`, `extension-no-callouts-*` | Quality & Structure | `add_extensions` | only these 4 sub-types — `extension-no-snippets-*` and `extension-weak-ext-*` stay manual, no mutate function exists for structured snippets or replacing existing asset copy yet |
+| `bid-opportunity-*` (**new rule**, `qualityStructureAnalyst.ts`) | Quality & Structure | `adjust_bid` | a converting keyword (CPA ≤ target) on Manual CPC / Enhanced CPC with bid headroom — proposes +20% (config `RULE_BID_OPP_INCREASE_PCT`, capped again against `MAX_BID_SHIFT_PCT`=30% in `validateChange`). Deliberately keyword-scoped: `rank-locked-*` (Performance & Budget, campaign-scoped) stays manual permanently since campaign-level "rank lost" isn't a single keyword-level mutate target |
+| `copy-*`, `low-ctr-ad-*` | Audience & Copy | `update_copy` | creates a PAUSED RSA only; `audience-*` findings (RLSA/Customer Match/lookalike strategy) stay manual — not a single executable change |
+
+New `qualityStructureAnalyst.ts` config knobs: `RULE_BID_OPP_MIN_CLICKS` (default 10), `RULE_BID_OPP_MIN_CONV` (default 3), `RULE_BID_OPP_INCREASE_PCT` (default 0.20) — see the `RULE_*` table further down.
+
+### Disposition of `/api/pending-changes` and `/api/execute-result`
+
+Marked `@deprecated` in their doc comments, left functional, not deleted — a clean rollback path (revert `implementation.ts`, restore the script's execute block) if the API integration misbehaves. Nothing currently calls either route.
+
+### Verification status (read before assuming this is fully proven in production)
+
+- Typecheck and lint pass clean across every file in this migration.
+- `npm run hourly-implementation` was smoke-tested against the real Supabase DB with `DRY_RUN=true`: the new `readApprovedAutoItems()` join query ran without error (0 approved+auto rows existed at the time, so no `deriveChanges`/`validateChange`/`persistChange` code path was exercised end-to-end with real data yet).
+- **Not yet verified**: an actual live mutation against the real "Baidyanath" Google Ads account (sitelink/callout/keyword/bid/RSA creation), and whether the developer token's current Test-tier access is sufficient for mutate calls (only reads have been confirmed). Per the original plan's staged rollout, the next steps before trusting this in production are: (1) approve one `auto` item of each new type with `DRY_RUN=true` and review the resulting `change_log`/`proposed_changes` on `/history`/`/action-plan`, (2) flip `DRY_RUN=false` for one action type at a time, lowest-risk first, (3) add the `GOOGLE_ADS_*` secrets to Vercel and GitHub Actions once satisfied.
 
 ---
 
@@ -334,6 +401,11 @@ All `RULE_*` keys are read from the `config` table via `RulesEngine.load(default
 | `RULE_QS_BRAND_MAX` | 8 | Quality & Structure Analyst — QS at or below this = "low" for **pure** brand keywords (stricter than `RULE_QS_MAX`) |
 | `RULE_MIN_VIABLE_CONVERSIONS` | 10 | Quality & Structure Analyst — campaign conversions below this = structurally too small to optimize |
 | `RULE_MIN_BUDGET_CPC_MULTIPLE` | 5 | Quality & Structure Analyst — daily budget below (account avg CPC × this) = too small to gather daily data |
+| `RULE_BID_OPP_MIN_CLICKS` | 10 | Quality & Structure Analyst — min clicks for the keyword-level `bid-opportunity-*` rule to trust the CPA comparison |
+| `RULE_BID_OPP_MIN_CONV` | 3 | Quality & Structure Analyst — min conversions for `bid-opportunity-*` |
+| `RULE_BID_OPP_INCREASE_PCT` | 0.20 | Quality & Structure Analyst — proposed bid increase for `bid-opportunity-*` (capped again at `MAX_BID_SHIFT_PCT`=30% in `implementation.ts`) |
+| `MAX_BUDGET_SHIFT_PCT` | 0.20 | `implementation.ts` — max fraction of a campaign's daily budget moved per run (`adjust_budget`) |
+| `MAX_BID_SHIFT_PCT` | 0.30 | `implementation.ts` — max fraction a keyword's CPC bid can change per run (`adjust_bid`) |
 
 ---
 
@@ -384,7 +456,8 @@ Every Analyst returns findings in this structure (stored as rows in the `finding
       "evidence": ["data point 1", "data point 2"],
       "brain_sources": ["brain_001", "brain_042"],
       "missing_data": ["data that would make this more defensible — [] if confidence is high"],
-      "alternative_explanations": ["a plausible alternative cause the analyst considered — [] if none"]
+      "alternative_explanations": ["a plausible alternative cause the analyst considered — [] if none"],
+      "proposed_changes": [{"type": "add_keyword|add_negative|add_sitelink|add_callout|create_rsa|adjust_bid|adjust_budget", "params": {}}]
     }
   ],
   "summary": "One sentence summary",
@@ -393,7 +466,7 @@ Every Analyst returns findings in this structure (stored as rows in the `finding
 }
 ```
 
-`brain_sources` tracks which Brain entries informed each finding — full traceability. `missing_data`/`alternative_explanations` are v2 additions (see "Synthesis pipeline v2 additions" below) — optional, default `[]`, populated by analysts directly or filled in later by the Recommendation Validator agent. `SynthFinding` (the in-pipeline shape, `agent`/`runDate`/`mode` attached) additionally carries `validation_flags?: string[]` once synthesis has run — not analyst output, bookkeeping only.
+`brain_sources` tracks which Brain entries informed each finding — full traceability. `missing_data`/`alternative_explanations` are v2 additions (see "Synthesis pipeline v2 additions" below) — optional, default `[]`, populated by analysts directly or filled in later by the Recommendation Validator agent. `proposed_changes` is the Execute-mode migration's structured execution contract (see that section above) — optional, default `[]`, the only field `implementation.ts` reads to actually mutate Google Ads; distinct from `action` (free-text prose for the dashboard). `SynthFinding` (the in-pipeline shape, `agent`/`runDate`/`mode` attached) additionally carries `validation_flags?: string[]` once synthesis has run — not analyst output, bookkeeping only.
 
 ---
 
@@ -422,22 +495,22 @@ function score(finding) {
 ## Action classification — `action_category` / `action_type`
 
 Every `action_plan` row carries:
-- `action_category`: `auto` (implementable via Google Ads Script execute mode under safety rails), `manual` (human must act — e.g. structural changes), or `insight` (informational only, e.g. competitive/trend findings)
-- `action_type`: specific operation. Original v1 set: `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`. v2 (`web/src/agents/synthesis/actionMeta.ts`) routes by `agent` + `finding.id` prefix and adds: `add_extensions` (Quality & Structure's `extension-*`), `restructure` (`structure-*` and Search Intelligence's `search-term-pattern-*`), `fix_quality_score` (`low-qs-*`/`no-qs-spend-*`), `reallocate_budget` (`idle-budget-*` and the generalized `pacing-*`), `adjust_bid` (`rank-locked-*`), `update_copy` (Audience & Copy findings, and Performance Budget's `low-ctr-*`), `fix_landing_page` (Landing Page Scorer), `fix_conversion_tracking` (`troas-no-value-*`/`no-conv-*`/`no-value-*`/`high-cvr-*`/`low-cvr-*`), `change_bid_strategy` (Performance Budget's default fallback).
+- `action_category`: `auto` (implementable directly via the Google Ads API, see "Execute-mode migration" above, under safety rails), `manual` (human must act — e.g. structural changes), or `insight` (informational only, e.g. competitive/trend findings)
+- `action_type`: specific operation. Original v1 set: `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`. v2 (`web/src/agents/synthesis/actionMeta.ts`) routes by `agent` + `finding.id` prefix and adds: `add_extensions` (Quality & Structure's `extension-*`), `restructure` (`structure-*` and Search Intelligence's `search-term-pattern-*`), `fix_quality_score` (`low-qs-*`/`no-qs-spend-*`), `reallocate_budget` (`idle-budget-*` and the generalized `pacing-*`), `adjust_bid` (`rank-locked-*` and the keyword-level `bid-opportunity-*`), `update_copy` (Audience & Copy findings, and Performance Budget's `low-ctr-*`), `fix_landing_page` (Landing Page Scorer), `fix_conversion_tracking` (`troas-no-value-*`/`no-conv-*`/`no-value-*`/`high-cvr-*`/`low-cvr-*`), `change_bid_strategy` (Performance Budget's default fallback).
 
-Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFormatter.js`, extended for v2's id-prefix conventions documented in `agentNames.ts`.
+Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFormatter.js`, extended for v2's id-prefix conventions documented in `agentNames.ts`. **`action_category: "auto"` scope as of the Execute-mode migration** — see the table in "Execute-mode migration" above for exactly which id prefixes are auto vs. manual within each `action_type`; several `action_type`s (e.g. `add_keywords`, `add_extensions`, `update_copy`) are a MIX of auto and manual depending on the specific id prefix, not uniformly one or the other.
 
 ---
 
 ## Safety rules for implementation — NON-NEGOTIABLE (unchanged from v1)
 
-1. **Never delete** — only pause (ads, keywords, ad groups, extensions)
-2. **Bid limit**: max ±30% change per run
-3. **Budget limit**: max 20% of campaign daily budget moved per run
+1. **Never delete** — only pause (ads, keywords, ad groups, extensions). New ad copy is created PAUSED, never auto-enabled (see "Execute-mode migration" above).
+2. **Bid limit**: max ±30% change per run — enforced in `implementation.ts`'s `validateChange()` (config `MAX_BID_SHIFT_PCT`), rejected (not silently clamped) if exceeded
+3. **Budget limit**: max 20% of campaign daily budget moved per run — same enforcement point (config `MAX_BUDGET_SHIFT_PCT`)
 4. **Ad minimum**: ad group must retain ≥ 2 active ads before pausing any ad
-5. **Dry-run**: if `config.DRY_RUN = true` → log to `change_log` but never mutate
+5. **Dry-run**: if `config.DRY_RUN = true` → log to `change_log` but never call the Google Ads API
 6. **Change log**: every mutate appends a row to `change_log` (before/after/agent/timestamp)
-7. **Approval check**: read `action_plan.status` (must be `approved`) before every mutate — skip if not approved
+7. **Approval check**: read `action_plan.status` (must be `approved`) before every mutate — skip if not approved. Since the Execute-mode migration this is the **only** checkpoint before a real account change — there is no human-in-the-loop step after approval anymore for `auto` items (except `update_copy`, which only ever creates a paused ad).
 
 ---
 
@@ -446,7 +519,7 @@ Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFo
 Direct ports of the v1 Sheet schemas, with `*_json` columns becoming `jsonb`. Tables:
 `campaigns`, `campaigns_daily`, `ad_groups`, `keywords`, `ads`, `search_terms`, `extensions`, `negative_keywords` (raw snapshots, replaced wholesale on each collect run, except `campaigns_daily` which appends/upserts by date), and `findings`, `action_plan`, `approvals`, `pending_changes`, `change_log`, `brain_entries`, `config`, `token_usage` (agent layer).
 
-**v2 additions to the agent layer** (see "Synthesis pipeline v2 additions" above): `findings.missing_data` / `findings.alternative_explanations` (nullable `jsonb`, default `[]`); `action_plan.missing_data` / `action_plan.alternative_explanations` / `action_plan.validation_flags` (same). `brain_entries.status` (`active` default — also `staged` for Brain Learning Agent candidates awaiting review, `rejected`). `token_usage.provider` is now a provider **id** (`groq_1`, `cerebras`, `openrouter`, ...), not a fixed `"groq"` string — see "Multi-provider LLM client" above.
+**v2 additions to the agent layer** (see "Synthesis pipeline v2 additions" above): `findings.missing_data` / `findings.alternative_explanations` (nullable `jsonb`, default `[]`); `action_plan.missing_data` / `action_plan.alternative_explanations` / `action_plan.validation_flags` (same). `brain_entries.status` (`active` default — also `staged` for Brain Learning Agent candidates awaiting review, `rejected`). `token_usage.provider` is now a provider **id** (`groq_1`, `cerebras`, `openrouter`, ...), not a fixed `"groq"` string — see "Multi-provider LLM client" above. `findings.proposed_changes` / `action_plan.proposed_changes` (nullable `jsonb`, default `[]`) added by the Execute-mode migration — see "Execute-mode migration" above (migration script: `web/scripts/migrate-proposed-changes-column.ts`). `pending_changes.status` values changed from `queued`/`executing`/`done`/`error` to `dry_run`/`done`/`error` as part of the same migration — it's now a synchronously-written local audit table, not a poll queue.
 
 **Budget bug fix (the original motivation for v2):** the Overview page computes "today's total daily budget" as `SUM(budget_micros) WHERE status='ENABLED'` from `campaigns`, AND displays `updated_at` (last collection timestamp) next to it so staleness is visible. Pacing is computed from `campaigns_daily`, not the snapshot, so it stays internally consistent.
 
@@ -461,20 +534,23 @@ google-ads-agent/
 │   └── progress.json               # v2 Phase A–J tracker
 │
 ├── google_ads_script.js            # ← paste into Google Ads → Tools → Scripts (kept from v1)
-│                                   #   mode=collect: POSTs to /api/ingest
-│                                   #   mode=execute: polls /api/pending-changes
+│                                   #   collect mode ONLY: POSTs to /api/ingest
+│                                   #   (execute mode retired — see "Execute-mode migration")
 │
 ├── apps_script/                    # LEGACY v1 (Apps Script + Sheets) — kept for reference until cutover (Phase J)
 │
 └── web/                             # Next.js app (Vercel)
     ├── drizzle.config.ts
+    ├── scripts/
+    │   ├── generate-refresh-token.ts        # one-time local OAuth flow for GOOGLE_ADS_REFRESH_TOKEN — never run in CI
+    │   └── migrate-proposed-changes-column.ts
     ├── src/
     │   ├── db/
     │   │   ├── schema.ts            # Drizzle schema — authoritative DB shape
     │   │   └── index.ts             # db client
     │   ├── app/
     │   │   ├── page.tsx              # Overview (KPIs, budget pacing)
-    │   │   ├── action-plan/          # Action Plan page (approve/reject)
+    │   │   ├── action-plan/          # Action Plan page (approve/reject), renders proposed_changes verbatim
     │   │   ├── history/              # Past runs, change log
     │   │   ├── brain/                # Brain entry management
     │   │   ├── config/                # RULE_* / targets editor
@@ -482,13 +558,15 @@ google-ads-agent/
     │   │       ├── ingest/route.ts
     │   │       ├── action-plan/route.ts
     │   │       ├── approve/route.ts
-    │   │       ├── pending-changes/route.ts
-    │   │       └── execute-result/route.ts
+    │   │       ├── pending-changes/route.ts   # @deprecated — see "Execute-mode migration"
+    │   │       └── execute-result/route.ts    # @deprecated — see "Execute-mode migration"
     │   └── agents/                    # Agent pipeline (run by GitHub Actions)
     │       ├── analysts/              # 6 Analyst modules + recommendationValidatorAgent.ts (7th, reviews output) + brainLearningAgent.ts (weekly)
     │       ├── synthesis/             # dedup, cross-agent patterns, businessRules.ts (NEW), scoring, action-meta
     │       ├── rules/                 # ported RulesEngine + detect_() functions
-    │       └── llm.ts                 # multi-provider client: Groq/Cerebras/OpenRouter/Gemini failover (NOT Groq-only anymore)
+    │       ├── llm.ts                 # multi-provider client: Groq/Cerebras/OpenRouter/Gemini failover (NOT Groq-only anymore)
+    │       ├── googleAdsClient.ts     # sole Google Ads API touchpoint — see "Execute-mode migration"
+    │       └── implementation.ts      # reads approved 'auto' action_plan rows, calls googleAdsClient.ts directly
     └── .github/workflows/
         ├── daily-audit.yml            # cron PAUSED — see "Operational status" above
         ├── hourly-implementation.yml
@@ -508,7 +586,7 @@ google-ads-agent/
 | **E** | Build Audience & Copy Analyst + Search Intelligence Analyst + Market Intelligence Analyst + Landing Page Scorer | ✅ done |
 | **F** | Synthesis pipeline + `daily-audit` GitHub Actions workflow, end-to-end with real data | ✅ done |
 | **G** | Dashboard: Overview (budget bug fixed) + Action Plan page with approve/reject | ✅ done |
-| **H** | `/api/pending-changes` + `/api/execute-result` + repoint execute mode + `hourly-implementation` workflow | ✅ done |
+| **H** | `/api/pending-changes` + `/api/execute-result` + repoint execute mode + `hourly-implementation` workflow | ✅ done — **superseded June 2026** by the Execute-mode migration to the direct Google Ads API; see that section above |
 | **I** | Slack digest notification + `/history`, `/brain`, `/config` pages | ✅ done |
 | **J** | Parallel-run validation vs v1 → cutover → decommission `apps_script/` | 🔄 in progress |
 
@@ -554,8 +632,8 @@ The v1 implementation lives entirely under `apps_script/` and remains functional
 - Full synthesis pipeline (dedup, cross-agent patterns, business-rules gate, recommendation validator, impact scoring, action classification)
 - Multi-provider LLM failover (Groq×4 keys / Cerebras / OpenRouter / Gemini — see "Multi-provider LLM client")
 - GitHub Actions automation (daily-audit — **cron currently paused**, hourly-implementation every hour, weekly-brain-learning Mondays)
-- API endpoints for data collection (/api/ingest), approvals (/api/approve), execution (/api/pending-changes, /api/execute-result)
-- Safety rails (budget caps, bid limits, dry-run mode, approval gates)
+- API endpoints for data collection (/api/ingest), approvals (/api/approve); execution now calls the Google Ads API directly via googleAdsClient.ts (/api/pending-changes, /api/execute-result deprecated — see "Execute-mode migration")
+- Safety rails (budget caps, bid limits, dry-run mode, approval gates) — enforced in implementation.ts's validateChange() against the real Google Ads API
 - Slack notifications (optional digest when action items ready)
 - Brain knowledge base (add/edit/delete strategy entries, plus weekly autonomous Brain Learning Agent staging candidates)
 - Config editor (tune RULE_* thresholds in dashboard)

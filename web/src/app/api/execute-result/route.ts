@@ -18,8 +18,16 @@ interface Body {
 }
 
 /**
- * POST /api/execute-result — reports the outcome of applying each
- * pending_changes row via the Google Ads Script's execute mode.
+ * POST /api/execute-result
+ *
+ * @deprecated Retired by the Google Ads API migration, same reasoning as
+ * /api/pending-changes (see that route's doc comment) — implementation.ts
+ * now writes pending_changes/change_log synchronously itself after calling
+ * googleAdsClient.ts directly, instead of waiting for the Google Ads Script
+ * to report back via this route. Left functional, not deleted, for rollback.
+ *
+ * Reports the outcome of applying each pending_changes row via the Google
+ * Ads Script's execute mode (now removed from google_ads_script.js).
  *
  * Updates pending_changes.status to 'done' or 'error' and appends a
  * change_log row per result.

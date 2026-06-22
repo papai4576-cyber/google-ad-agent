@@ -41,6 +41,7 @@ async function getRows(category: Category, priority: Priority, status: StatusFil
       missingData: actionPlan.missingData,
       alternativeExplanations: actionPlan.alternativeExplanations,
       validationFlags: actionPlan.validationFlags,
+      proposedChanges: actionPlan.proposedChanges,
       evidence: findings.evidence,
       impactMetric: findings.impactMetric,
       impactDirection: findings.impactDirection,
@@ -109,6 +110,87 @@ function StatusDot({ status }: { status: string }) {
   if (status === "approved") return <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />approved</span>;
   if (status === "rejected") return <span className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-400"><span className="h-1.5 w-1.5 rounded-full bg-zinc-400" />rejected</span>;
   return <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400"><span className="h-1.5 w-1.5 rounded-full bg-amber-400" />pending</span>;
+}
+
+type ProposedChange = { type: string; params: Record<string, unknown> };
+
+/**
+ * Renders `proposed_changes` verbatim — the exact structured change implementation.ts will execute,
+ * not the free-text `action` prose (which is capped at 1000 chars by normalizeFinding and isn't
+ * reliable for "what exactly goes live", especially for create_rsa headlines/descriptions).
+ */
+function ProposedChangesPanel({ changes }: { changes: ProposedChange[] }) {
+  if (!changes || changes.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-emerald-100 dark:border-emerald-900/40 bg-emerald-50/40 dark:bg-emerald-950/20 px-3 py-2.5">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-1.5">
+        Exact change to execute ({changes.length})
+      </p>
+      <div className="space-y-2">
+        {changes.map((c, i) => (
+          <ProposedChangeEntry key={i} change={c} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProposedChangeEntry({ change }: { change: ProposedChange }) {
+  const p = change.params || {};
+  const s = (v: unknown) => (v == null ? "" : String(v));
+
+  switch (change.type) {
+    case "create_rsa": {
+      const headlines = Array.isArray(p.headlines) ? (p.headlines as string[]) : [];
+      const descriptions = Array.isArray(p.descriptions) ? (p.descriptions as string[]) : [];
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <p className="font-medium">New RSA (created PAUSED) — ad group {s(p.ad_group_id)}</p>
+          <p className="mt-1"><span className="text-zinc-400">Headlines:</span> {headlines.map((h) => `“${h}”`).join("  ")}</p>
+          <p className="mt-0.5"><span className="text-zinc-400">Descriptions:</span> {descriptions.map((d) => `“${d}”`).join("  ")}</p>
+        </div>
+      );
+    }
+    case "add_sitelink":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">+ Sitelink:</span> “{s(p.link_text)}” {p.description1 ? `— ${s(p.description1)}` : ""} {p.description2 ? `/ ${s(p.description2)}` : ""}
+          <span className="text-zinc-400"> → {s(p.final_url)}</span>
+        </div>
+      );
+    case "add_callout":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">+ Callout:</span> “{s(p.text)}”
+        </div>
+      );
+    case "add_keyword":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">+ Keyword:</span> [{s(p.text)}] ({s(p.match_type)}) — ad group {s(p.ad_group_id)}
+        </div>
+      );
+    case "add_negative":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">− Negative:</span> {s(p.text)} ({s(p.match_type)}) — {s(p.scope)} {s(p.scope_id)}
+        </div>
+      );
+    case "adjust_bid":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">Bid:</span> criterion {s(p.criterion_id)} — {((Number(p.current_cpc_bid_micros) || 0) / 1e6).toFixed(2)} → {((Number(p.new_cpc_bid_micros) || 0) / 1e6).toFixed(2)}
+        </div>
+      );
+    case "adjust_budget":
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <span className="font-medium">Budget:</span> campaign {s(p.campaign_id)} → {((Number(p.new_budget_micros) || 0) / 1e6).toFixed(2)}/day
+        </div>
+      );
+    default:
+      return <div className="text-xs text-zinc-500">{change.type}: {JSON.stringify(p)}</div>;
+  }
 }
 
 function agentLabel(a?: string | null) {
@@ -235,6 +317,7 @@ export default async function ActionPlanPage({
             const missingData = (row.missingData as string[] | null) ?? [];
             const alternativeExplanations = (row.alternativeExplanations as string[] | null) ?? [];
             const validationFlags = (row.validationFlags as string[] | null) ?? [];
+            const proposedChanges = (row.proposedChanges as ProposedChange[] | null) ?? [];
 
             return (
               <div
@@ -310,6 +393,9 @@ export default async function ActionPlanPage({
                     </ul>
                   </div>
                 )}
+
+                {/* Exact structured change (proposed_changes) — what implementation.ts will actually execute */}
+                <ProposedChangesPanel changes={proposedChanges} />
 
                 {/* Missing data / alternative explanations */}
                 {(missingData.length > 0 || alternativeExplanations.length > 0) && (

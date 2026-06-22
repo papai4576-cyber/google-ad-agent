@@ -22,6 +22,7 @@ import {
   VALID,
   validateFinding,
   validateFindings as validateFindingsRaw,
+  normalizeProposedChanges,
   type AnalystOutput,
   type BrainCategory,
   type Category,
@@ -31,6 +32,7 @@ import {
   type FindingTarget,
   type Magnitude,
   type Mode,
+  type ProposedChange,
 } from "./schema";
 
 /* ===========================================================================
@@ -50,6 +52,8 @@ export interface Candidate {
   evidence: string[];
   /** Short human hint used as a fallback for title/what/action if the LLM omits prose. */
   hint?: string;
+  /** Deterministic, pre-built structured change — for rules whose proposed_changes is pure arithmetic on already-known data (e.g. bid math) and shouldn't depend on the LLM getting numbers right. Takes precedence over anything the LLM writes for this candidate. */
+  proposedChanges?: ProposedChange[];
 }
 
 interface RuleContext {
@@ -228,6 +232,7 @@ export async function runRuleBasedAnalyst<TData>(spec: RuleBasedAnalystSpec<TDat
       alternative_explanations: Array.isArray(p.alternative_explanations)
         ? (p.alternative_explanations as unknown[]).slice(0, 4).map((e) => String(e).slice(0, 200))
         : [],
+      proposed_changes: c.proposedChanges ?? normalizeProposedChanges(p.proposed_changes),
     };
     const errs = validateFinding(f);
     if (errs.length) {
@@ -285,7 +290,8 @@ export function buildSystemPrompt(persona: string, instructionsForDomain: string
     '      "evidence":   ["data point 1", "data point 2"],\n' +
     '      "brain_sources": ["brain_001", "brain_042"],   // ids from the BRAIN section, or [] if none used\n' +
     '      "missing_data": ["data that would make this more defensible"],   // [] if confidence is high\n' +
-    '      "alternative_explanations": ["a plausible alternative cause"]    // [] if none is plausible\n' +
+    '      "alternative_explanations": ["a plausible alternative cause"],   // [] if none is plausible\n' +
+    '      "proposed_changes": []   // OPTIONAL — leave [] UNLESS the instructions above explicitly tell you to populate it for this finding type. When required, each entry is { "type": "...", "params": {...} } in the EXACT shape given above — no extra or missing fields.\n' +
     "    }\n" +
     "  ],\n" +
     '  "summary": "one-sentence overview of the run"\n' +
@@ -335,7 +341,7 @@ export function buildRuleSystemPrompt(persona: string, instructions: string): st
     "Output STRICT JSON:\n" +
     "{\n" +
     '  "findings": [\n' +
-    '    { "id": "<echo the given id EXACTLY>", "title": "<=100 chars", "what": "what is wrong / the opportunity", "why": "why it matters, quantified", "action": "exact change for a human implementer", "brain_sources": ["brain_001"], "missing_data": [], "alternative_explanations": [] }\n' +
+    '    { "id": "<echo the given id EXACTLY>", "title": "<=100 chars", "what": "what is wrong / the opportunity", "why": "why it matters, quantified", "action": "exact change for a human implementer", "brain_sources": ["brain_001"], "missing_data": [], "alternative_explanations": [], "proposed_changes": [] }\n' +
     "  ],\n" +
     '  "summary": "one sentence"\n' +
     "}\n\n" +
@@ -352,7 +358,9 @@ export function buildRuleSystemPrompt(persona: string, instructions: string): st
     "  - In `why`: embed the ACTUAL numbers from the `data` line — spend, conv, CPA, ROAS, CTR, IS%.\n" +
     "  - In `action`: state the specific value to change TO (e.g. 'reduce daily budget from ₹3,500 to ₹2,800').\n" +
     "  - NEVER write 'the campaign', 'this campaign', 'the keyword' — always use its name.\n" +
-    "  - If the given confidence for an issue is \"medium\" or \"low\", populate missing_data with what would raise it.\n"
+    "  - If the given confidence for an issue is \"medium\" or \"low\", populate missing_data with what would raise it.\n" +
+    "  - proposed_changes is OPTIONAL — leave [] UNLESS the instructions above explicitly tell you to populate it for this " +
+    "specific issue's id prefix. When required, follow the EXACT { type, params } shape given in those instructions.\n"
   );
 }
 

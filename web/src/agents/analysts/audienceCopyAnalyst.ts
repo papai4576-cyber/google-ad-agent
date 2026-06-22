@@ -60,7 +60,13 @@ export async function buildAudienceCopyAnalystSpec(): Promise<RuleBasedAnalystSp
       "'Learn More'. Good Baidyanath headlines: 'Buy Chyawanprash Online', '100% Ayurvedic Formula', 'Since 1917', " +
       "'Trusted by Millions', 'Shop Baidyanath Now'. Also write 2 descriptions (max 90 chars each). " +
       "Return `action` as a PLAIN TEXT string (NOT JSON, NOT an array), formatted exactly like:\n" +
-      "Headlines: • [headline1] • [headline2] • [headline3] Descriptions: • [desc1] • [desc2]",
+      "Headlines: • [headline1] • [headline2] • [headline3] Descriptions: • [desc1] • [desc2]\n\n" +
+      'For COPY findings only (id prefixes "copy-" and "low-ctr-ad-" — NOT "audience-"): ALSO populate `proposed_changes` ' +
+      'with EXACTLY ONE entry: {"type":"create_rsa","params":{"ad_group_id":"<the ad_group_id given in this finding\'s ' +
+      'evidence>","headlines":["<same 3-5 headlines as in action, <=30 chars each>"],"descriptions":["<same 2 descriptions ' +
+      'as in action, <=90 chars each>"],"final_urls":["<the final_url given in this finding\'s evidence>"]}}. If evidence ' +
+      "has no final_url, leave proposed_changes as [] (cannot auto-create an ad with no destination URL). Never populate " +
+      "proposed_changes for audience-* findings — those are strategic recommendations, not a single executable change.",
     brainCategories: ["audience", "copy", "brand"],
     brainLimit: 5,
     data: { campaigns, adGroups, ads, brandKeywords },
@@ -296,6 +302,11 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
     const hlSnip = JSON.stringify(headlines).slice(0, 300);
     const dsSnip = JSON.stringify(descs).slice(0, 200);
 
+    // Needed for any create_rsa proposed_changes entry — a new ad's final_url. No URL, no auto-implementable copy finding.
+    const finalUrls = Array.isArray(ad.finalUrls) ? ad.finalUrls : [];
+    const finalUrl = finalUrls.find((u) => typeof u === "string" && u.startsWith("http"));
+    const newAdEvidence = [`ad_group_id: ${agId}`, ...(finalUrl ? [`final_url: ${finalUrl}`] : [])];
+
     // 1. No CTA verb anywhere in ad copy.
     if (!AD_CTA_VERBS.test(allText)) {
       out.push({
@@ -311,7 +322,7 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
         hint:
           `No CTA verb found. Ad group: ${agName}. Current headlines: ${hlSnip}. Current descriptions: ${dsSnip}. ` +
           "Write 3-5 new headlines (<=30 chars) with CTA verbs and 2 new descriptions (<=90 chars).",
-        evidence: ["no CTA verb in any headline/description", `impressions ${impr}`, `current headlines: ${hlSnip}`],
+        evidence: ["no CTA verb in any headline/description", `impressions ${impr}`, `current headlines: ${hlSnip}`, ...newAdEvidence],
       });
       continue;
     }
@@ -332,7 +343,7 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
         hint:
           `No numbers in headlines. Ad group: ${agName}. Current headlines: ${hlSnip}. ` +
           "Rewrite 3-5 headlines to include specific numbers (price, %, count, days) for credibility.",
-        evidence: ["no digits in any headline", `impressions ${impr}`, `current headlines: ${hlSnip}`],
+        evidence: ["no digits in any headline", `impressions ${impr}`, `current headlines: ${hlSnip}`, ...newAdEvidence],
       });
       continue;
     }
@@ -358,6 +369,7 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
           `ad-group median CTR ${(medCtr * 100).toFixed(2)}%`,
           `impressions ${impr}`,
           `current headlines: ${hlSnip}`,
+          ...newAdEvidence,
         ],
       });
       continue;
@@ -386,7 +398,7 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
           hint:
             `Message-match gap: ad-group "${agName}" has no matching keyword in headlines. Current headlines: ${hlSnip}. ` +
             "Rewrite to include the ad group theme in at least 1-2 headlines for QS alignment.",
-          evidence: [`ad-group: ${agName}`, "no agName token found in headlines", `impressions ${impr}`, `current headlines: ${hlSnip}`],
+          evidence: [`ad-group: ${agName}`, "no agName token found in headlines", `impressions ${impr}`, `current headlines: ${hlSnip}`, ...newAdEvidence],
         });
         continue;
       }
@@ -417,7 +429,12 @@ function detectAdCopy(data: AudienceCopyData, cfg: Record<string, number>): Cand
           hint:
             `Headline fatigue: 3-gram "${dupTri[0]}" repeats in 3+ headlines. Ad group: ${agName}. Current headlines: ${hlSnip}. ` +
             "Replace the repetitive headlines with diverse angles (different value props, CTAs, specifics).",
-          evidence: [`repeated 3-gram: "${dupTri[0]}" (${trigramCounts[dupTri[0]]} times)`, `${headlines.length} total headlines`, `current headlines: ${hlSnip}`],
+          evidence: [
+            `repeated 3-gram: "${dupTri[0]}" (${trigramCounts[dupTri[0]]} times)`,
+            `${headlines.length} total headlines`,
+            `current headlines: ${hlSnip}`,
+            ...newAdEvidence,
+          ],
         });
       }
     }

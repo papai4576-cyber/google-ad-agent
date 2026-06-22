@@ -2,9 +2,10 @@
  * runHourlyImplementation.ts — the `hourly-implementation` GitHub Actions
  * entry point (Phase H).
  *
- * Derives `pending_changes` rows from newly-approved `action_category='auto'`
- * `action_plan` rows (see implementation.ts), so the Google Ads Script's
- * execute mode has a queue to poll via /api/pending-changes.
+ * Calls runImplementation(), which executes newly-approved
+ * `action_category='auto'` `action_plan` rows directly against the Google
+ * Ads API (see implementation.ts, googleAdsClient.ts) — no more queue/poll
+ * handshake with google_ads_script.js's execute mode.
  *
  * Run via `npm run hourly-implementation` (tsx --require ./scripts/load-env.cjs,
  * which loads .env / .env.local into process.env before this module's import
@@ -31,7 +32,7 @@ async function main() {
 
   console.log("-------------------------------------------");
   console.log(
-    `dry_run=${result.dryRun} approved=${result.approved} queued=${result.queued} skipped=${result.skipped}`
+    `dry_run=${result.dryRun} approved=${result.approved} executed=${result.executed} skipped=${result.skipped}`
   );
   for (const c of result.changes.slice(0, 10)) {
     console.log(`  ${c.changeType} ${c.targetType} "${c.targetName}": ${c.beforeValue} -> ${c.afterValue}`);
