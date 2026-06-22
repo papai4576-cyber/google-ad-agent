@@ -246,41 +246,38 @@ npm run hourly-implementation
 ### 7.2 Approval Flow
 
 1. **Daily audit runs** → findings classified as `auto` / `manual` / `insight`
-2. **Auto items appear in Action Plan** → Approve / Reject buttons
+2. **Auto items appear in Action Plan** → Approve / Reject buttons, with the exact structured change shown (`proposed_changes` — full keyword lists, sitelink/callout copy, RSA headlines, not just the summary text)
 3. **Approve** → status = `approved`, entry in `approvals` table
-4. **Hourly-implementation detects it** → derives change, queues to `pending_changes`
-5. **Google Ads Script (execute mode) polls** → pulls from `/api/pending-changes`, applies change, reports back
+4. **Hourly-implementation detects it** → calls the Google Ads API **directly** via `googleAdsClient.ts` (no script involved) and writes the result to `change_log` (or a simulated row if `DRY_RUN=true`) — see "Execute-Mode Migration" in Part 8 below
 
 ---
 
-## Part 8: Execute Mode & Real Changes (Phase J Cutover Only)
+## Part 8: Execute-Mode Migration & Real Changes
 
-⚠️ **This runs real changes to your Google Ads account — do NOT enable until Phase J cutover is confirmed.**
+⚠️ **This runs real changes to your Google Ads account — keep `DRY_RUN=true` until you've reviewed simulated `change_log` rows and are confident in the output.**
 
-### 8.1 Enable Execute Mode (After Phase J Validation)
+**Execute mode (the Google Ads Script polling `/api/pending-changes`, applying via `AdsApp`, reporting to `/api/execute-result`) was retired in June 2026.** `google_ads_script.js` now runs **collect mode only**. The execute side moved to `web/src/agents/implementation.ts`, which calls the real Google Ads API directly via `web/src/agents/googleAdsClient.ts` — see CLAUDE.md's "Execute-mode migration" section for the full design. `MODE: "execute"` no longer exists as an option in `google_ads_script.js`.
 
-In `google_ads_script.js`:
-```js
-MODE: "execute"  // Change from "collect"
-```
+### 8.1 No script change needed
 
-### 8.2 What Execute Mode Does
+There is nothing to flip in `google_ads_script.js` to enable execution — `google_ads_script.js`'s `MODE` only ever needs to be `"collect"`. The approval gate (`action_plan.status = 'approved'`) plus `config.DRY_RUN` are the only switches that matter now.
 
-1. **Polls** `GET /api/pending-changes` (every hour or on demand)
-2. **Fetches** all queued changes
-3. **Applies** each via AdsApp (adjust_budget, add_negative)
-4. **Reports** back `POST /api/execute-result`
-5. **Updates** `pending_changes.status` to `done` or `error`
-6. **Writes** entry to `change_log`
+### 8.2 What the `hourly-implementation` job does
+
+1. Reads `action_plan` rows where `status='approved'` and `action_category='auto'`
+2. Reads each finding's `proposed_changes` (the structured, machine-executable version of the recommendation — e.g. exact keyword text, exact sitelink copy, exact RSA headlines)
+3. If `DRY_RUN=true`: writes a simulated `change_log` row (`dry_run=true, success=true`) and skips the real API call
+4. If `DRY_RUN=false`: calls the matching `googleAdsClient.ts` function (e.g. `addNegativeKeyword`, `setKeywordBid`, `addSitelinks`, `createResponsiveSearchAd`) and writes the real result to `change_log`
+5. New ad copy (`update_copy` / `create_rsa`) is always created **PAUSED** — approval authorizes creation, never going live
 
 ### 8.3 Safety Rails (Non-Negotiable)
 
 ```
-- Never delete (only pause)
-- Bid limit: ±30% per run
-- Budget limit: 20% per run
+- Never delete (only pause). New ads created PAUSED, never auto-enabled.
+- Bid limit: ±30% per run (config MAX_BID_SHIFT_PCT), enforced in implementation.ts's validateChange()
+- Budget limit: 20% per run (config MAX_BUDGET_SHIFT_PCT), same enforcement point
 - Ad minimum: ≥2 active per ad group
-- DRY_RUN mode: log changes, don't apply (default: true unless config.DRY_RUN = false)
+- DRY_RUN mode: log changes, don't call the Google Ads API (default: true unless config.DRY_RUN = false)
 ```
 
 Check config table:
@@ -329,23 +326,19 @@ In Google Ads Scripts editor:
 ```js
 // Already set to v2, but verify:
 APPS_SCRIPT_WEBHOOK_URL: "https://web-seven-rho-96.vercel.app/api/ingest"
-MODE: "collect"  // Keep collecting
-
-// When ready to execute (after approval workflow test):
-MODE: "execute"  // Enable real changes
+MODE: "collect"  // The only mode — execute mode was retired, see Part 8
 ```
 
-### 10.2 Test Execute Mode Once
+### 10.2 Test the Direct-API Execute Path Once
 
-1. Approve one **manual** item on dashboard (safest test)
-2. Check `pending_changes` table → row should appear `status='queued'`
-3. Trigger `hourly-implementation` manually
-4. Watch Google Ads Script logs (execute mode runs next)
-5. Verify result in `change_log`
+1. Approve one **auto** item on the dashboard (e.g. an `add_negatives` finding — lowest risk) with `DRY_RUN=true` still set
+2. Trigger `hourly-implementation` manually (`npm run hourly-implementation` or the GitHub Actions workflow_dispatch)
+3. Verify a simulated row appeared in `change_log` (`dry_run=true, success=true`) with `before_value`/`after_value` matching the finding's `proposed_changes`
+4. Once satisfied, set `config.DRY_RUN = "false"` and repeat — confirm one real mutation succeeds in the actual Google Ads account before approving anything else
 
 ### 10.3 Go Live
 
-1. Set `MODE: "execute"` permanently
+1. Leave `config.DRY_RUN = "false"` once step 10.2 is confirmed
 2. Disable v1 scheduler jobs
 3. Monitor logs for 2–3 days
 4. If stable, decommission v1
@@ -391,7 +384,7 @@ npm run lint                   # Check code style
 
 # Automation (runs locally or via GitHub Actions)
 npm run daily-audit            # Run all 6 Analysts, populate action_plan
-npm run hourly-implementation  # Derive changes, queue pending_changes
+npm run hourly-implementation  # Execute approved 'auto' items directly via the Google Ads API (or simulate under DRY_RUN)
 
 # Validation & debugging
 npm run compare [date]         # Show v2 findings for a date (default: today)
@@ -404,21 +397,21 @@ npm run compare [date]         # Show v2 findings for a date (default: today)
 ```
 Google Ads Account
    │
-   ├→ collect-mode: Google Ads Script reads GAQL data
-   │                 POSTs to /api/ingest
-   │                 writes to: campaigns, keywords, ads, etc.
-   │
-   └→ execute-mode: Google Ads Script polls /api/pending-changes
-                    applies changes via AdsApp
-                    reports to /api/execute-result
-                    writes to: change_log
+   └→ collect-mode (the ONLY mode): Google Ads Script reads GAQL data
+                    POSTs to /api/ingest
+                    writes to: campaigns, keywords, ads, etc.
+
+Google Ads API (direct, no script involved)
+   └→ googleAdsClient.ts called by implementation.ts after dashboard
+      approval — writes to: change_log (and pending_changes as a
+      local audit log, no longer polled by anything)
 
 Vercel (Next.js + API Routes)
-   ├ GET /api/ingest        [collect data from Ads Script]
-   ├ GET /api/pending-changes [execute mode polls this]
-   ├ POST /api/execute-result [execute mode reports back]
-   ├ POST /api/approve       [dashboard approves items]
-   ├ GET / /action-plan ... [dashboard pages]
+   ├ GET /api/ingest          [collect data from Ads Script]
+   ├ GET /api/pending-changes [@deprecated — rollback path only]
+   ├ POST /api/execute-result [@deprecated — rollback path only]
+   ├ POST /api/approve        [dashboard approves items]
+   ├ GET / /action-plan ...   [dashboard pages]
    └ Dashboard (/, /action-plan, /history, /brain, /config)
 
 Postgres (Supabase)
@@ -453,5 +446,5 @@ GitHub Actions (Automation)
 ✅ **Ready for cutover when:**
 - [ ] 7 days of parallel spot-checks logged
 - [ ] v2 findings ≥ v1 findings
-- [ ] Execute mode test passed
+- [ ] Direct-API execute path tested (Part 10.2: one DRY_RUN approval, then one real mutation)
 - [ ] Monitoring plan in place

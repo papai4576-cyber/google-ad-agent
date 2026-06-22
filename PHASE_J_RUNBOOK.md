@@ -38,7 +38,7 @@ Expected output: findings summary with P1/P2/P3 breakdown.
 - `daily-audit` workflow runs at 06:00 UTC (Phase F setup) → populates v2 Postgres
 - Dashboard at https://web-seven-rho-96.vercel.app shows v2 findings
 - Approvals via dashboard buttons (Phase G)
-- `hourly-implementation` workflow runs hourly to process approved `auto` items (Phase H)
+- `hourly-implementation` workflow runs hourly and calls the Google Ads API **directly** for approved `auto` items (Execute-mode migration, June 2026 — see CLAUDE.md "Execute-mode migration") — no script polling involved on the v2 side anymore
 
 ### Daily Comparison Routine
 
@@ -116,12 +116,11 @@ By end of Week 1, v2 should:
    - Line ~30: Ensure `INGEST_SECRET` is set to `873f1fe208b9a445b34ecad0aaf0650931b7da98cc9d91e6` (same for both v1/v2)
    - Test: Trigger a collect run manually → verify data lands in Supabase (`campaigns` table should update)
 
-**3. Verify execute mode polls v2**
-   - Google Ads Script execute mode already polls `_apiUrl_('pending-changes')` (Phase H rewrite)
-   - Approve one item in v2 dashboard (e.g., a `manual` item → mark as approved)
-   - Check `pending_changes` table: row should appear with `status='queued'`
-   - Execute mode polls and flips it to `executing` → watch logs
-   - Result posted back to `/api/execute-result` → `change_log` row created
+**3. Verify the direct-API execute path on v2**
+   - There is no script polling on the v2 side anymore — `implementation.ts` calls `googleAdsClient.ts` directly the moment `hourly-implementation` runs (see CLAUDE.md "Execute-mode migration"). `/api/pending-changes` and `/api/execute-result` are `@deprecated`, kept only as a rollback path.
+   - Approve one `auto` item in the v2 dashboard with `DRY_RUN=true` still set
+   - Run `npm run hourly-implementation` (or wait for the hourly cron) → check the `change_log` table: a row should appear with `dry_run=true, success=true` and `before_value`/`after_value` matching the finding's `proposed_changes`
+   - Once satisfied, flip `DRY_RUN=false` for one action type at a time (lowest-risk first: `add_negatives`) and confirm a real mutation succeeds before widening
 
 **4. Disable v1 scheduler jobs (day after cutover)**
    - Google Ads Account > Scripts: Disable or delete the old v1 runs (time-based triggers)
@@ -153,9 +152,8 @@ Once v2 is live and stable for ≥3 days:
    - [ ] Update `state/progress.json`: mark Phase J "done" with cutover date
 
 **3. Google Ads account cleanup (manual, out-of-scope):**
-   - [ ] Keep Google Ads Script project (it drives both v1 and v2 now, just repointed)
+   - [ ] Keep Google Ads Script project (it drives both v1 and v2 now, just repointed) — note its execute mode has been removed (collect mode only, see CLAUDE.md "Execute-mode migration"); v2's execute path is now the direct Google Ads API, not this script
    - [ ] Delete old Apps Script project if it's separate (confirm with user first)
-   - [ ] Keep the collect + execute modes in the unified script indefinitely
 
 **4. Supabase/Vercel:**
    - Keep running (cost-free tier)
@@ -175,6 +173,8 @@ If v2 has a critical issue and needs to rollback:
    - Change `APPS_SCRIPT_WEBHOOK_URL` back to v1 webhook URL
    - Re-enable v1 Apps Script time-based triggers
    - Wait for next scheduled collect (v1 resumes)
+
+   If the issue is specifically with the direct-API execute path (not collect mode): revert `web/src/agents/implementation.ts` to its pre-migration version and restore `google_ads_script.js`'s execute-mode block from git history — `/api/pending-changes` and `/api/execute-result` are still functional (kept `@deprecated`, not deleted, for exactly this rollback case).
 
 3. **Post-mortem:**
    - Document what failed in v2
@@ -222,4 +222,4 @@ Output includes:
 - **Both systems use the same Google Ads Script data source** (collect mode) — only the backend (v1 Sheets vs v2 Postgres) differs
 - **Approvals are separate** — v1 approvals in Sheets, v2 in dashboard; manually sync during cutover week if needed
 - **No data migration** — v2 learns from day-1 snapshots; no backfill from v1 needed (v1 continues to run in parallel, so new data flows to both)
-- **Safe to run in parallel** — collect mode writes to both, execute mode can poll v1 or v2 (no conflicts)
+- **Safe to run in parallel** — collect mode writes to both. v1's execute mode is unaffected; v2's execute path is the direct Google Ads API (no script polling, no conflict with v1's mechanism)
