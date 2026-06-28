@@ -50,15 +50,31 @@ export async function buildAudienceCopyAnalystSpec(): Promise<RuleBasedAnalystSp
   return {
     agentName: AGENTS.AUDIENCE_COPY,
     persona:
-      "You are a senior Google Ads audience strategy and RSA copywriting specialist. " +
-      "Every finding must include a specific number from the data as evidence. Do not write generic recommendations.",
+      "You are a senior Google Ads audience strategy and RSA copywriting specialist who has actually looked at what " +
+      "competing Ayurvedic/wellness brands run in search ads. Every finding must include a specific number from the data " +
+      "as evidence. Do not write generic recommendations.",
     instructions:
       "For audience findings, explain exactly which audience type to add (RLSA, Customer Match, in-market segment) and in which mode " +
-      "(observation vs targeting), framed as observation-mode tests since Raw_Audiences data is not yet collected. " +
-      "For copy findings: the EVIDENCE contains the ACTUAL CURRENT HEADLINES. You MUST write 3-5 replacement headlines " +
-      "(max 30 chars each) that are SPECIFIC to Baidyanath Ayurvedic products — NEVER write generic 'Buy Now', 'Shop Online', " +
-      "'Learn More'. Good Baidyanath headlines: 'Buy Chyawanprash Online', '100% Ayurvedic Formula', 'Since 1917', " +
-      "'Trusted by Millions', 'Shop Baidyanath Now'. Also write 2 descriptions (max 90 chars each). " +
+      "(observation vs targeting), framed as observation-mode tests since Raw_Audiences data is not yet collected.\n\n" +
+      "For copy findings: the EVIDENCE contains the ACTUAL CURRENT HEADLINES and the specific ad group / product this ad belongs " +
+      "to. You MUST write 3-5 replacement headlines (max 30 chars each) and 2 descriptions (max 90 chars each) that are " +
+      "SPECIFIC to the EXACT product in THIS ad group's name — not generic brand boilerplate.\n\n" +
+      "ANTI-TEMPLATING RULES (CRITICAL — this is the #1 way this task fails):\n" +
+      '  - NEVER write \'Buy Now\', \'Shop Online\', \'Learn More\', or any other CTA so generic it would fit ANY product.\n' +
+      "  - NEVER reuse the same headline or description text across two different findings in this run. Each ad group sells " +
+      "something different (chyawanprash vs hair oil vs digestive tablets, etc.) — the copy must read like it was written by " +
+      "someone who knows THAT product, not a brand-name find-and-replace on a template. If you catch yourself writing the same " +
+      "phrase twice, change it.\n" +
+      "  - Do not lean on one repeated brand tagline (e.g. a founding year or 'trusted by millions' claim) as filler across " +
+      "every single ad — use it in at most one headline for the WHOLE batch, if at all, and make the rest specific to the product, " +
+      "a concrete benefit, an ingredient, a use-case, or a competitive angle.\n" +
+      "  - Vary the ANGLE per ad: lead with a different one of price/value, a specific ingredient or formulation detail, the use-case " +
+      "or symptom it addresses, a credibility marker (certification, review count if in evidence), or how it compares to what shoppers " +
+      "see from competing brands — don't make every headline in the batch the same 'feature claim' shape.\n" +
+      "  - If a BRAIN section below includes 'competitive' entries (what other Ayurvedic/wellness brands emphasize in their ads — " +
+      "price comparisons, certifications, guarantees, ingredient sourcing, etc.), use that to differentiate this product's copy " +
+      "from what a shopper would see from a competitor, and cite the brain_id in brain_sources. If no competitive entries are " +
+      "present, still avoid the generic-brand-template failure mode above.\n\n" +
       "Return `action` as a PLAIN TEXT string (NOT JSON, NOT an array), formatted exactly like:\n" +
       "Headlines: • [headline1] • [headline2] • [headline3] Descriptions: • [desc1] • [desc2]\n\n" +
       'For COPY findings only (id prefixes "copy-" and "low-ctr-ad-" — NOT "audience-"): ALSO populate `proposed_changes` ' +
@@ -67,8 +83,8 @@ export async function buildAudienceCopyAnalystSpec(): Promise<RuleBasedAnalystSp
       'as in action, <=90 chars each>"],"final_urls":["<the final_url given in this finding\'s evidence>"]}}. If evidence ' +
       "has no final_url, leave proposed_changes as [] (cannot auto-create an ad with no destination URL). Never populate " +
       "proposed_changes for audience-* findings — those are strategic recommendations, not a single executable change.",
-    brainCategories: ["audience", "copy", "brand"],
-    brainLimit: 5,
+    brainCategories: ["audience", "copy", "brand", "competitive", "products"],
+    brainLimit: 8,
     data: { campaigns, adGroups, ads, brandKeywords },
     formatDataForPrompt: (d) => {
       // Map campaign names for lookup

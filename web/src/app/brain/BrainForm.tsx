@@ -16,6 +16,7 @@ const CATEGORIES = [
   "pmax",
   "reddit_intel",
   "general",
+  "products",
 ];
 
 interface BrainFormProps {
