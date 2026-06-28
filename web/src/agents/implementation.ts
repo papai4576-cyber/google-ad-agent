@@ -244,6 +244,20 @@ function toDerivedChange(item: ApprovedItem, pc: ProposedChange, index: number):
         afterValue: `+RSA (PAUSED): ${JSON.stringify(pc.params.headlines ?? [])}`,
         params: pc.params,
       };
+    case "create_ad_group": {
+      const kws = Array.isArray(pc.params.keywords) ? (pc.params.keywords as Array<{ text: string }>) : [];
+      return {
+        ...base,
+        changeType: "create_ad_group",
+        targetType: "campaign",
+        targetId: String(pc.params.campaign_id ?? item.targetId),
+        targetName: item.targetName,
+        field: "ad_group",
+        beforeValue: "(not present)",
+        afterValue: `+"${String(pc.params.new_ad_group_name ?? "")}" (${kws.length} keywords)`,
+        params: pc.params,
+      };
+    }
     default:
       return {
         ...base,
@@ -321,6 +335,18 @@ function validateChange(ch: DerivedChange, ctx: Context): { ok: boolean; reason?
     const longDesc = descriptions.find((d) => d.length > 90);
     if (longDesc) return { ok: false, reason: `description "${longDesc}" > Google's 90-char limit` };
     if (!ch.params.ad_group_id) return { ok: false, reason: "missing ad_group_id" };
+    return { ok: true };
+  }
+
+  if (ch.changeType === "create_ad_group") {
+    const name = String(ch.params.new_ad_group_name ?? "");
+    if (!name) return { ok: false, reason: "empty ad group name" };
+    if (name.length > 255) return { ok: false, reason: `ad group name ${name.length} chars > Google's 255-char limit` };
+    if (!ch.params.campaign_id) return { ok: false, reason: "missing campaign_id" };
+    const keywords = Array.isArray(ch.params.keywords) ? (ch.params.keywords as Array<{ text?: string }>) : [];
+    if (keywords.length === 0) return { ok: false, reason: "no keywords to seed the new ad group with" };
+    const empty = keywords.find((k) => !k.text);
+    if (empty) return { ok: false, reason: "one or more keywords have empty text" };
     return { ok: true };
   }
 
@@ -461,6 +487,19 @@ async function executeOnGoogleAds(ch: DerivedChange): Promise<{ success: boolean
         (ch.params.descriptions as string[]) ?? [],
         (ch.params.final_urls as string[]) ?? []
       );
+
+    case "create_ad_group": {
+      const keywords = ((ch.params.keywords as Array<{ text: string; match_type?: string }>) ?? []).map((k) => ({
+        text: k.text,
+        matchType: (String(k.match_type ?? "BROAD").toUpperCase() as "EXACT" | "PHRASE" | "BROAD"),
+      }));
+      return googleAds.createAdGroup(
+        String(ch.params.campaign_id),
+        String(ch.params.new_ad_group_name),
+        keywords,
+        ch.params.cpc_bid_micros ? Number(ch.params.cpc_bid_micros) : undefined
+      );
+    }
 
     default:
       return { success: false, error: `unsupported change type ${ch.changeType}` };

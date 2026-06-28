@@ -39,6 +39,7 @@ export const VALID = {
     "pmax",
     "reddit_intel",
     "general",
+    "products",
   ] as const,
 };
 
@@ -74,7 +75,15 @@ export interface EstimatedImpact {
  * for what each type expects.
  */
 export interface ProposedChange {
-  type: "add_keyword" | "add_negative" | "add_sitelink" | "add_callout" | "create_rsa" | "adjust_bid" | "adjust_budget";
+  type:
+    | "add_keyword"
+    | "add_negative"
+    | "add_sitelink"
+    | "add_callout"
+    | "create_rsa"
+    | "adjust_bid"
+    | "adjust_budget"
+    | "create_ad_group";
   params: Record<string, unknown>;
 }
 
@@ -246,6 +255,7 @@ const VALID_CHANGE_TYPES = new Set<ProposedChange["type"]>([
   "create_rsa",
   "adjust_bid",
   "adjust_budget",
+  "create_ad_group",
 ]);
 
 /** Drops malformed entries rather than letting garbage through to implementation.ts — never throws. */

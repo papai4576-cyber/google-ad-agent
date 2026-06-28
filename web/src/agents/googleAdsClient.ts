@@ -210,6 +210,60 @@ export async function addKeyword(
 }
 
 /* ===========================================================================
+ * New ad group — create() + N keyword criteria, atomic in one mutate call
+ * (temporary resource id -1, same pattern as addSitelinks below). Purely
+ * additive — never touches the ad group(s) the keywords are being split out
+ * of, so it carries none of the risk of an actual move/merge.
+ *
+ * Created with status ENABLED, not PAUSED — google_ads_script.js's collect
+ * queries all filter `ad_group.status = 'ENABLED'`, so a paused new ad group
+ * would be invisible to tomorrow's data collection and silently never get
+ * flagged for the obvious next step (it has zero ads). Being enabled with no
+ * ads is safe — Google Ads serves nothing from an ad group with no ads — and
+ * it means the account's existing structure-understaffed-ag-* rule will
+ * naturally pick it up next run and recommend adding ads, closing the loop
+ * without this function needing to also create ad copy itself.
+ * ========================================================================= */
+
+export async function createAdGroup(
+  campaignId: string,
+  name: string,
+  keywords: Array<{ text: string; matchType: "EXACT" | "PHRASE" | "BROAD" }>,
+  cpcBidMicros?: number
+): Promise<MutateResult> {
+  const customer = getCustomer();
+  const cid = customerId();
+  const tempAdGroupResourceName = ResourceNames.adGroup(cid, "-1");
+  try {
+    const adGroupResource: Record<string, unknown> = {
+      resource_name: tempAdGroupResourceName,
+      campaign: ResourceNames.campaign(cid, campaignId),
+      name,
+      status: enums.AdGroupStatus.ENABLED,
+      type: enums.AdGroupType.SEARCH_STANDARD,
+    };
+    if (cpcBidMicros) adGroupResource.cpc_bid_micros = Math.round(cpcBidMicros);
+
+    const operations = [
+      { entity: "ad_group", operation: "create", resource: adGroupResource },
+      ...keywords.map((k) => ({
+        entity: "ad_group_criterion",
+        operation: "create",
+        resource: {
+          ad_group: tempAdGroupResourceName,
+          keyword: { text: k.text, match_type: enums.KeywordMatchType[k.matchType] },
+          status: enums.AdGroupCriterionStatus.ENABLED,
+        },
+      })),
+    ];
+    const result = await customer.mutateResources(operations as never);
+    return { success: true, resourceName: extractResourceName(result, 0) };
+  } catch (e) {
+    return { success: false, error: describeError(e) };
+  }
+}
+
+/* ===========================================================================
  * Extensions — asset create + campaign_asset link, atomic in one mutate call
  * (temporary resource id -1, same pattern as the package's own budget+campaign example).
  * ========================================================================= */

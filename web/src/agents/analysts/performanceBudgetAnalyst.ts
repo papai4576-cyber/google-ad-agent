@@ -20,6 +20,9 @@
  * Reads: campaigns, campaigns_daily. Brain categories: bidding, scaling, general.
  */
 
+import { and, eq, lt } from "drizzle-orm";
+import { db } from "@/db";
+import { changeLog as changeLogTable } from "@/db/schema";
 import type { Candidate, RuleBasedAnalystSpec } from "../runAnalyst";
 import { RulesEngine } from "../rules/rulesEngine";
 import { AGENTS } from "../synthesis/agentNames";
@@ -28,6 +31,23 @@ import { loadAccountData, micros, readCampaignsDaily, type CampaignRow, type Cam
 interface PerformanceBudgetData {
   campaigns: CampaignRow[];
   campaignsDaily: CampaignDailyRow[];
+  /** Budget changes >=30 days old, not yet reviewed, with enough campaigns_daily history on both sides to trust a before/after comparison. Pre-computed in buildPerformanceBudgetAnalystSpec() (async DB work), detect() just maps them. */
+  changeOutcomeCandidates: ChangeOutcomeCandidate[];
+}
+
+interface ChangeOutcomeCandidate {
+  changeLogId: string;
+  campaignId: string;
+  campaignName: string;
+  changeDate: string;
+  beforeBudget: number;
+  afterBudget: number;
+  beforeCpa: number;
+  afterCpa: number;
+  beforeRoas: number;
+  afterRoas: number;
+  beforeConv: number;
+  afterConv: number;
 }
 
 const RULE_DEFAULTS = {
@@ -52,11 +72,125 @@ const RULE_DEFAULTS = {
   ANOMALY_CPA_JUMP_RATIO: 1.3,
   ANOMALY_CVR_DROP_RATIO: 0.7,
   ANOMALY_MIN_BASELINE_CONV: 5,
+  CHANGE_REVIEW_DAYS: 30,
+  CHANGE_REVIEW_WINDOW_DAYS: 14,
+  CHANGE_REVIEW_WORSE_RATIO: 1.2,
+  CHANGE_REVIEW_BETTER_RATIO: 0.85,
 };
 
+/**
+ * 30-day change-outcome feedback loop — closes the gap flagged in CLAUDE.md's
+ * "Known gaps" section (nothing previously checked whether a past mutation
+ * actually helped). Scoped to `adjust_budget` changes only: that's the one
+ * change type with genuine before/after data, since `campaigns_daily` has
+ * day-level granularity but keyword/ad-level snapshots don't (they're a
+ * point-in-time rolling-window aggregate, replaced wholesale each collect
+ * run — there's no historical per-day keyword/ad table to diff against).
+ * Other change types (adjust_bid, add_keyword, create_rsa, etc.) are left
+ * with `reviewed=false` rather than silently closed out with no real signal
+ * — a future pass can revisit them if/when finer-grained historical data
+ * exists.
+ *
+ * Does real DB work (this is the async data-prep step, not detect() itself,
+ * which must stay a pure function per the existing rule-based analyst
+ * pattern) — queries `change_log` for eligible rows, pulls a wide enough
+ * `campaigns_daily` window to compare 14 days before vs 14 days after each
+ * change, and marks every row it evaluates `reviewed=true` so it isn't
+ * re-evaluated indefinitely (even an "insufficient data" outcome is still a
+ * terminal verdict — there's no more "after" data coming for a 30+-day-old change).
+ */
+async function loadChangeOutcomeCandidates(cfg: Record<string, number>): Promise<ChangeOutcomeCandidate[]> {
+  if (!db) return [];
+
+  const reviewDays = cfg.change_review_days || 30;
+  const windowDays = cfg.change_review_window_days || 14;
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - reviewDays);
+
+  const eligible = await db
+    .select()
+    .from(changeLogTable)
+    .where(
+      and(
+        eq(changeLogTable.dryRun, false),
+        eq(changeLogTable.success, true),
+        eq(changeLogTable.reviewed, false),
+        eq(changeLogTable.fieldChanged, "daily_budget"),
+        lt(changeLogTable.timestamp, cutoff)
+      )
+    );
+  if (eligible.length === 0) return [];
+
+  // Wide enough campaigns_daily window to cover every eligible change's before+after period.
+  const oldestChange = eligible.reduce((min, r) => (r.timestamp < min ? r.timestamp : min), eligible[0].timestamp);
+  const daysSinceOldest = Math.ceil((Date.now() - oldestChange.getTime()) / 86400000);
+  const daily = await readCampaignsDaily(daysSinceOldest + windowDays + 2);
+
+  const byCampaign = new Map<string, CampaignDailyRow[]>();
+  for (const row of daily) {
+    const list = byCampaign.get(String(row.campaignId)) ?? [];
+    list.push(row);
+    byCampaign.set(String(row.campaignId), list);
+  }
+
+  const out: ChangeOutcomeCandidate[] = [];
+  const reviewedIds: string[] = [];
+
+  for (const row of eligible) {
+    reviewedIds.push(row.id);
+    const campaignId = row.targetId;
+    const rows = byCampaign.get(campaignId) ?? [];
+    const changeDateStr = row.timestamp.toISOString().split("T")[0];
+
+    const before = { spend: 0, conv: 0, value: 0 };
+    const after = { spend: 0, conv: 0, value: 0 };
+    for (const r of rows) {
+      const spend = micros(r.costMicros);
+      const conv = Number(r.conversions) || 0;
+      const value = Number(r.conversionValue) || 0;
+      if (r.date < changeDateStr) {
+        before.spend += spend;
+        before.conv += conv;
+        before.value += value;
+      } else {
+        after.spend += spend;
+        after.conv += conv;
+        after.value += value;
+      }
+    }
+
+    out.push({
+      changeLogId: row.id,
+      campaignId,
+      campaignName: row.targetName || campaignId,
+      changeDate: changeDateStr,
+      beforeBudget: parseFloat(row.beforeValue || "0") || 0,
+      afterBudget: parseFloat(row.afterValue || "0") || 0,
+      beforeCpa: before.conv > 0 ? before.spend / before.conv : 0,
+      afterCpa: after.conv > 0 ? after.spend / after.conv : 0,
+      beforeRoas: before.spend > 0 ? before.value / before.spend : 0,
+      afterRoas: after.spend > 0 ? after.value / after.spend : 0,
+      beforeConv: before.conv,
+      afterConv: after.conv,
+    });
+  }
+
+  // Mark every evaluated row reviewed=true now — a 30+-day-old change has no more "after" data
+  // coming, so re-checking it on a future run would produce the exact same (non-)verdict.
+  for (const id of reviewedIds) {
+    await db.update(changeLogTable).set({ reviewed: true }).where(eq(changeLogTable.id, id));
+  }
+
+  return out;
+}
+
 export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnalystSpec<PerformanceBudgetData>> {
-  const [{ campaigns }, campaignsDaily] = await Promise.all([loadAccountData(), readCampaignsDaily(21)]);
   const ruleConfig = await RulesEngine.load(RULE_DEFAULTS);
+  const [{ campaigns }, campaignsDaily, changeOutcomeCandidates] = await Promise.all([
+    loadAccountData(),
+    readCampaignsDaily(21),
+    loadChangeOutcomeCandidates(ruleConfig),
+  ]);
 
   return {
     agentName: AGENTS.PERFORMANCE_BUDGET,
@@ -72,7 +206,7 @@ export async function buildPerformanceBudgetAnalystSpec(): Promise<RuleBasedAnal
       "check will also catch this, but flag it yourself too).",
     brainCategories: ["bidding", "scaling", "general"],
     brainLimit: 5,
-    data: { campaigns, campaignsDaily },
+    data: { campaigns, campaignsDaily, changeOutcomeCandidates },
     formatDataForPrompt: (data) => {
       const lines = ["CAMPAIGNS (all enabled, latest snapshot):"];
       for (const c of data.campaigns) {
@@ -123,6 +257,7 @@ function detectPerformanceBudget(data: PerformanceBudgetData, ctx: { targets: { 
   }
 
   out.push(...detectTrendAnomalies(data, cfg, cur));
+  out.push(...detectChangeOutcomes(data, cfg, cur));
 
   // Account-level pacing: total spend vs monthly budget target.
   if (monthlyBudget > 0) {
@@ -583,6 +718,117 @@ function detectTrendAnomalies(data: PerformanceBudgetData, cfg: Record<string, n
           `${recent.clicks} recent clicks`,
           `${dropPct.toFixed(0)}% drop`,
         ],
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Reviews budget changes the system made >=30 days ago — did it actually help? See the
+ * doc comment on loadChangeOutcomeCandidates() above for why this is scoped to adjust_budget
+ * only. Always produces a finding (never silently discards an evaluated change): low-confidence
+ * "insufficient data" if either window's conversion volume is too thin to trust, otherwise a
+ * real verdict — worse (recommend reverting, with the revert as a deterministic proposed_change,
+ * same pattern as the keyword-level bid-opportunity rule), better (confirm + suggest scaling
+ * further), or neutral.
+ */
+function detectChangeOutcomes(data: PerformanceBudgetData, cfg: Record<string, number>, cur: string): Candidate[] {
+  const out: Candidate[] = [];
+  const worseRatio = cfg.change_review_worse_ratio || 1.2;
+  const betterRatio = cfg.change_review_better_ratio || 0.85;
+  const minConv = cfg.anomaly_min_baseline_conv || 5;
+
+  for (const c of data.changeOutcomeCandidates) {
+    const tgt = { type: "campaign" as const, id: c.campaignId, name: c.campaignName };
+    const thinData = c.beforeConv < minConv || c.afterConv < minConv;
+
+    if (thinData) {
+      out.push({
+        id: `change-outcome-${c.changeLogId}`,
+        category: "performance",
+        severity: "P3",
+        magnitude: "low",
+        confidence: "low",
+        effort: "easy",
+        metric: "CPA",
+        direction: "down",
+        target: tgt,
+        hint:
+          `Budget change on "${c.campaignName}" (${c.changeDate}, ${cur}${c.beforeBudget.toFixed(0)} -> ${cur}${c.afterBudget.toFixed(0)}/day) ` +
+          `can't be confidently evaluated 30 days later — too little conversion volume on one or both sides ` +
+          `(before: ${c.beforeConv.toFixed(0)} conv, after: ${c.afterConv.toFixed(0)} conv) to trust a before/after comparison.`,
+        evidence: [`before conv ${c.beforeConv.toFixed(0)}`, `after conv ${c.afterConv.toFixed(0)}`, `need >=${minConv} on each side`],
+      });
+      continue;
+    }
+
+    const cpaRatio = c.beforeCpa > 0 && c.afterCpa > 0 ? c.afterCpa / c.beforeCpa : 0;
+    const gotWorse = cpaRatio >= worseRatio;
+    const gotBetter = cpaRatio > 0 && cpaRatio <= betterRatio;
+
+    if (gotWorse) {
+      out.push({
+        id: `change-outcome-${c.changeLogId}`,
+        category: "performance",
+        severity: cpaRatio >= 1.5 ? "P1" : "P2",
+        magnitude: cpaRatio >= 1.5 ? "high" : "medium",
+        confidence: "high",
+        effort: "easy",
+        metric: "CPA",
+        direction: "down",
+        target: tgt,
+        hint:
+          `Budget increase on "${c.campaignName}" (${c.changeDate}, ${cur}${c.beforeBudget.toFixed(0)} -> ${cur}${c.afterBudget.toFixed(0)}/day) made CPA ` +
+          `${((cpaRatio - 1) * 100).toFixed(0)}% WORSE 30 days later (${cur}${c.beforeCpa.toFixed(0)} -> ${cur}${c.afterCpa.toFixed(0)}). Recommend reverting the budget back to ${cur}${c.beforeBudget.toFixed(0)}/day.`,
+        evidence: [
+          `before CPA ${cur}${c.beforeCpa.toFixed(0)} (${c.beforeConv.toFixed(0)} conv)`,
+          `after CPA ${cur}${c.afterCpa.toFixed(0)} (${c.afterConv.toFixed(0)} conv)`,
+          `${cpaRatio.toFixed(2)}x worse`,
+        ],
+        proposedChanges: [
+          {
+            type: "adjust_budget",
+            params: { campaign_id: c.campaignId, new_budget_micros: Math.round(c.beforeBudget * 1e6) },
+          },
+        ],
+      });
+    } else if (gotBetter) {
+      out.push({
+        id: `change-outcome-${c.changeLogId}`,
+        category: "performance",
+        severity: "P3",
+        magnitude: "medium",
+        confidence: "high",
+        effort: "easy",
+        metric: "CPA",
+        direction: "down",
+        target: tgt,
+        hint:
+          `Budget increase on "${c.campaignName}" (${c.changeDate}, ${cur}${c.beforeBudget.toFixed(0)} -> ${cur}${c.afterBudget.toFixed(0)}/day) improved CPA ` +
+          `${((1 - cpaRatio) * 100).toFixed(0)}% 30 days later (${cur}${c.beforeCpa.toFixed(0)} -> ${cur}${c.afterCpa.toFixed(0)}) — this one worked. Consider scaling it further.`,
+        evidence: [
+          `before CPA ${cur}${c.beforeCpa.toFixed(0)} (${c.beforeConv.toFixed(0)} conv)`,
+          `after CPA ${cur}${c.afterCpa.toFixed(0)} (${c.afterConv.toFixed(0)} conv)`,
+          `${cpaRatio.toFixed(2)}x (lower is better)`,
+        ],
+      });
+    } else {
+      out.push({
+        id: `change-outcome-${c.changeLogId}`,
+        category: "performance",
+        severity: "P3",
+        magnitude: "low",
+        confidence: "medium",
+        effort: "easy",
+        metric: "CPA",
+        direction: "down",
+        target: tgt,
+        hint:
+          `Budget change on "${c.campaignName}" (${c.changeDate}, ${cur}${c.beforeBudget.toFixed(0)} -> ${cur}${c.afterBudget.toFixed(0)}/day) had a neutral effect on CPA ` +
+          `30 days later (${cur}${c.beforeCpa.toFixed(0)} -> ${cur}${c.afterCpa.toFixed(0)}).`,
+        evidence: [`before CPA ${cur}${c.beforeCpa.toFixed(0)}`, `after CPA ${cur}${c.afterCpa.toFixed(0)}`],
       });
     }
   }

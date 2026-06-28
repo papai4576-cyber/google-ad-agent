@@ -71,6 +71,14 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
       "concrete about the restructure: name the split, the consolidation, or the ad to add. For extension gaps, propose CONCRETE " +
       "starting copy: 4-6 sitelink texts, 6-8 callouts, or 1-2 structured-snippet headers+values — tailored to the campaign's " +
       "offering, within Google length limits (sitelink text <= 25 chars).\n\n" +
+      "ANTI-TEMPLATING RULES (CRITICAL): each campaign in this batch promotes a different product/category (read the campaign " +
+      "name and the campaign_final_url in evidence to find out which) — sitelink/callout copy must be specific to THAT product, " +
+      "not a reusable wellness-brand tagline. NEVER reuse the same sitelink description or callout text across two different " +
+      "campaigns in this run — if the product differs, the copy must differ. Generic filler like a bare immunity/wellness claim " +
+      "with no product specificity counts as a failure here, the same as writing 'Shop Now'. If a BRAIN section below includes " +
+      "'competitive' entries (what other Ayurvedic/wellness brands lead with in sitelinks/callouts — certifications, guarantees, " +
+      "price/value framing, ingredient sourcing), use that to make this campaign's copy distinct from what a shopper sees from a " +
+      "competitor, and cite the brain_id in brain_sources.\n\n" +
       'For sitelink findings (id prefixes "extension-no-extensions-account", "extension-no-sitelinks-", "extension-few-sitelinks-"): ' +
       "ALSO populate `proposed_changes` with one entry per NEW sitelink you propose (4-6 for no-sitelinks, enough to reach 4 total " +
       'for few-sitelinks): {"type":"add_sitelink","params":{"campaign_id":"<target.id>","link_text":"<=25 chars","description1":' +
@@ -81,8 +89,8 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
       '{"type":"add_callout","params":{"campaign_id":"<target.id>","text":"<=25 chars"}}.\n' +
       'Structured-snippet findings ("extension-no-snippets-") and weak-extension-copy findings ("extension-weak-ext-") have no ' +
       "executable change available yet — leave proposed_changes as [] for those.",
-    brainCategories: ["structure", "copy", "landing_page", "brand"],
-    brainLimit: 4,
+    brainCategories: ["structure", "copy", "landing_page", "brand", "competitive", "products"],
+    brainLimit: 7,
     data,
     formatDataForPrompt: (d) => {
       const lines = ["ACCOUNT STRUCTURE:"];
@@ -143,6 +151,57 @@ function buildCampaignFinalUrlMap(data: QualityStructureData): Record<string, st
     if (url) out[cid] = url;
   }
   return out;
+}
+
+/**
+ * Token-overlap clustering for "structure proposals" — turns "this ad group is bloated"
+ * from a flag into an actual named split. Finds the largest group of keywords sharing a
+ * distinctive token (a word NOT already in the ad group's own name, since that's the
+ * shared theme everything has by definition) that's a genuine MINORITY of the ad group
+ * (>=3 keywords, but <=60% of the total — large enough to be worth a dedicated ad group,
+ * small enough that splitting it off doesn't just relabel the whole ad group). Picks the
+ * single largest such cluster per ad group, deterministically — no LLM judgment call,
+ * same reasoning as the keyword-level bid-opportunity rule. Returns null if no candidate
+ * cluster clears the bar, in which case the caller falls back to the old flag-only finding.
+ */
+const SPLIT_STOPWORDS = new Set([
+  "the", "a", "an", "for", "and", "or", "of", "in", "on", "online", "buy", "best", "near",
+  "me", "with", "to", "is", "are", "your", "this", "that", "shop", "get", "now",
+]);
+
+function tokenizeForSplit(text: string): string[] {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 2 && !SPLIT_STOPWORDS.has(t));
+}
+
+function clusterKeywordsForSplit(
+  keywords: KeywordRow[],
+  adGroupName: string
+): { theme: string; keywords: KeywordRow[] } | null {
+  if (keywords.length < 6) return null; // need enough keywords for a split to be worth it on both sides
+  const agTokens = new Set(tokenizeForSplit(adGroupName));
+
+  const byToken = new Map<string, Set<KeywordRow>>();
+  for (const kw of keywords) {
+    const distinctiveTokens = tokenizeForSplit(kw.text).filter((t) => !agTokens.has(t));
+    for (const t of distinctiveTokens) {
+      if (!byToken.has(t)) byToken.set(t, new Set());
+      byToken.get(t)!.add(kw);
+    }
+  }
+
+  let best: { token: string; rows: KeywordRow[] } | null = null;
+  for (const [token, rowSet] of byToken) {
+    const rows = Array.from(rowSet);
+    if (rows.length < 3) continue;
+    if (rows.length > keywords.length * 0.6) continue;
+    if (!best || rows.length > best.rows.length) best = { token, rows };
+  }
+  if (!best) return null;
+  return { theme: best.token, keywords: best.rows };
 }
 
 function detectQualityStructure(
@@ -394,6 +453,8 @@ function detectQualityStructure(
       });
     }
     if (kwc > cfg.max_keywords_per_adgroup) {
+      const agKeywords = kwByAg[ag.adGroupId] || [];
+      const split = clusterKeywordsForSplit(agKeywords, ag.adGroupName);
       out.push({
         id: `structure-bloated-ag-${ag.adGroupId}`,
         category: "structure",
@@ -404,8 +465,32 @@ function detectQualityStructure(
         metric: "CTR",
         direction: "up",
         target: tgt,
-        hint: "Ad group packs many keywords spanning likely-different themes — split into Single-Theme Ad Groups for tighter message match.",
-        evidence: [`${kwc} keywords`, `${adc} ads`],
+        hint: split
+          ? `Ad group "${ag.adGroupName}" has ${kwc} keywords spanning multiple themes. ${split.keywords.length} of them share "${split.theme}" — ` +
+            `splitting those into a new dedicated ad group (leaving the rest in place) tightens message match for both halves.`
+          : "Ad group packs many keywords spanning likely-different themes — split into Single-Theme Ad Groups for tighter message match.",
+        evidence: [
+          `${kwc} keywords`,
+          `${adc} ads`,
+          ...(split ? [`candidate split: ${split.keywords.length} keywords share token "${split.theme}"`] : []),
+        ],
+        ...(split
+          ? {
+              proposedChanges: [
+                {
+                  type: "create_ad_group" as const,
+                  params: {
+                    campaign_id: String(ag.campaignId),
+                    new_ad_group_name: `${ag.adGroupName} - ${split.theme}`.slice(0, 255),
+                    keywords: split.keywords.map((k) => ({
+                      text: k.text,
+                      match_type: String(k.matchType || "BROAD").toUpperCase(),
+                    })),
+                  },
+                },
+              ],
+            }
+          : {}),
       });
     }
   }

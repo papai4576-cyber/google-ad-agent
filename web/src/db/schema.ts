@@ -264,6 +264,7 @@ export const changeLog = pgTable("change_log", {
   dryRun: boolean("dry_run").default(false).notNull(),
   success: boolean("success").notNull(),
   errorMessage: text("error_message"),
+  reviewed: boolean("reviewed").default(false).notNull(),
 });
 
 export const brainEntries = pgTable("brain_entries", {

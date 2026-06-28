@@ -108,7 +108,7 @@ Google Ads Script (collect mode ONLY)    [kept from v1 — repointed]
 
 ### `proposed_changes` — the structured execution contract
 
-`Finding` (`web/src/agents/schema.ts`) carries an optional `proposed_changes?: ProposedChange[]`, where `ProposedChange = { type: "add_keyword" | "add_negative" | "add_sitelink" | "add_callout" | "create_rsa" | "adjust_bid" | "adjust_budget", params: Record<string, unknown> }`. This is distinct from `action` (free-text prose for the human reading the dashboard, capped at 1000 chars) — `implementation.ts` reads `proposed_changes` to actually execute a change, never parses `action`. `normalizeProposedChanges()` validates/drops malformed entries the same defensive way the rest of `schema.ts` does; never throws. Matching nullable `jsonb` columns exist on both `findings` and `action_plan` (`web/scripts/migrate-proposed-changes-column.ts`), copied through in `planFormatter.ts` the same way `missing_data` already flows from finding to action-plan row.
+`Finding` (`web/src/agents/schema.ts`) carries an optional `proposed_changes?: ProposedChange[]`, where `ProposedChange = { type: "add_keyword" | "add_negative" | "add_sitelink" | "add_callout" | "create_rsa" | "adjust_bid" | "adjust_budget" | "create_ad_group", params: Record<string, unknown> }` (`create_ad_group` added by the structure-proposals addition, see "Strategic gap-closing additions" above). This is distinct from `action` (free-text prose for the human reading the dashboard, capped at 1000 chars) — `implementation.ts` reads `proposed_changes` to actually execute a change, never parses `action`. `normalizeProposedChanges()` validates/drops malformed entries the same defensive way the rest of `schema.ts` does; never throws. Matching nullable `jsonb` columns exist on both `findings` and `action_plan` (`web/scripts/migrate-proposed-changes-column.ts`), copied through in `planFormatter.ts` the same way `missing_data` already flows from finding to action-plan row.
 
 Two ways a finding gets `proposed_changes` populated:
 - **LLM-authored** (the default): the analyst's prompt instructs the LLM to emit a `proposed_changes` array, using real ids/URLs copied from the DATA section (never invented) — see Section 1/2 of `searchIntelligenceAnalyst.ts` (`add_keyword`/`add_negative`), the sitelink/callout instructions in `qualityStructureAnalyst.ts` (`add_sitelink`/`add_callout`), and the copy-finding instructions in `audienceCopyAnalyst.ts` (`create_rsa`). `runAnalyst.ts`'s shared `buildSystemPrompt`/`buildRuleSystemPrompt` document the field generically; each analyst's own `instructions` string spells out the exact shape for its own id prefixes and tells the LLM to leave `proposed_changes: []` for everything else.
@@ -157,6 +157,34 @@ Marked `@deprecated` in their doc comments, left functional, not deleted — a c
 - Typecheck and lint pass clean across every file in this migration.
 - `npm run hourly-implementation` was smoke-tested against the real Supabase DB with `DRY_RUN=true`: the new `readApprovedAutoItems()` join query ran without error (0 approved+auto rows existed at the time, so no `deriveChanges`/`validateChange`/`persistChange` code path was exercised end-to-end with real data yet).
 - **Not yet verified**: an actual live mutation against the real "Baidyanath" Google Ads account (sitelink/callout/keyword/bid/RSA creation), and whether the developer token's current Test-tier access is sufficient for mutate calls (only reads have been confirmed). Per the original plan's staged rollout, the next steps before trusting this in production are: (1) approve one `auto` item of each new type with `DRY_RUN=true` and review the resulting `change_log`/`proposed_changes` on `/history`/`/action-plan`, (2) flip `DRY_RUN=false` for one action type at a time, lowest-risk first, (3) add the `GOOGLE_ADS_*` secrets to Vercel and GitHub Actions once satisfied.
+
+---
+
+## Strategic gap-closing additions (June 2026)
+
+A full pipeline audit (every detection rule in all 6 analysts, traced against current — 2026 — real-world PPC strategist practice, not just opinion) found the system was strong on tactical/deterministic hygiene (QS, extensions, CTR, budget pacing, anomaly detection) but had three concrete strategic gaps: it could *flag* structural debt but never *propose* the new structure; it had no memory of whether its own past mutations actually worked; and "competitive" findings were Brain-knowledge-only with zero real auction data (and `businessRules.ts` already capped them at P3 *because* of that gap). Three additions close these:
+
+### 1. Structure proposals — `structure-bloated-ag-*` now proposes a real split, not just a flag
+
+`qualityStructureAnalyst.ts`'s `clusterKeywordsForSplit()` does deterministic token-overlap clustering on a bloated ad group's keyword list: it finds the largest set of keywords (≥3, but ≤60% of the group — large enough to be worth a dedicated ad group, small enough that splitting it off doesn't just relabel the whole group) sharing a distinctive token (a word *not* already in the ad group's own name, since that's the shared theme everything has by definition). When a cluster clears the bar, the candidate gets a deterministic `Candidate.proposedChanges` (same precedence pattern as the keyword-level bid-opportunity rule — pure arithmetic/string-matching beats trusting an LLM to re-derive it) of `{"type":"create_ad_group","params":{"campaign_id","new_ad_group_name","keywords":[{"text","match_type"}]}}`.
+
+`googleAdsClient.ts`'s `createAdGroup()` creates the new ad group + keyword criteria atomically (temp-resource-id pattern, same as `addSitelinks`). **Purely additive — never touches the ad group the keywords are being split out of**, so it carries none of the risk of an actual move/merge. Created with `status: ENABLED`, not PAUSED: `google_ads_script.js`'s collect queries all filter `ad_group.status = 'ENABLED'`, so a paused new ad group would be invisible to tomorrow's data collection and never get flagged for the obvious next step. Being enabled with zero ads is safe (Google Ads serves nothing from an ad group with no ads) — the account's existing `structure-understaffed-ag-*` rule will naturally pick the new empty ad group up next run and recommend adding ads, closing the loop without this rule also having to write ad copy itself. `structure-bloated-ag-*` routes to `action_category: "auto"` in `actionMeta.ts` (only when a split was actually found — the regression guard in `implementation.ts` skips the rest).
+
+### 2. 30-day change-outcome feedback loop — did our own past changes actually help?
+
+`performanceBudgetAnalyst.ts`'s `loadChangeOutcomeCandidates()` (the async DB-querying data-prep step, not `detect()` itself, which must stay pure) queries `change_log` for `adjust_budget` changes ≥30 days old (`RULE_CHANGE_REVIEW_DAYS`), not yet `reviewed`, then pulls a wide enough `campaigns_daily` window to compare the 14 days before vs the 14 days after each change for that campaign. **Scoped to `adjust_budget` only** — that's the one change type with genuine before/after data, since `campaigns_daily` has day-level granularity but keyword/ad-level snapshots don't (they're a point-in-time rolling-window aggregate, replaced wholesale each collect run — no historical per-day keyword/ad table to diff against). Every evaluated row gets `reviewed=true` regardless of outcome (a 30+-day-old change has no more "after" data coming, so re-checking it next run would produce the identical verdict) — new `change_log.reviewed` column, migration `web/scripts/migrate-change-log-reviewed-column.ts`.
+
+`detectChangeOutcomes()` in the same file always produces a finding, never silently discards an evaluated change: low-confidence "insufficient data" if either window's conversions are below `RULE_ANOMALY_MIN_BASELINE_CONV`, otherwise a real verdict — **worse** (CPA ratio ≥ `RULE_CHANGE_REVIEW_WORSE_RATIO`, default 1.2x) gets a deterministic revert-to-the-old-budget `proposed_changes` entry and routes to `action_category: "auto"` in `actionMeta.ts`; **better** (≤ `RULE_CHANGE_REVIEW_BETTER_RATIO`, default 0.85x) or **neutral** are informational-only (`action_category: "insight"`, nothing to execute). This directly answers the "no agent-health/quality monitor over time" gap flagged in this file's own "Known gaps" section below — though only for budget changes specifically, not full cross-run agent-quality drift, which remains open.
+
+### 3. Real Auction Insights data — manual import, since the API won't give it to us
+
+Tested directly against this account: the dedicated GAQL fields (`metrics.auction_insight_search_impression_share`, `segments.auction_insight_domain`) are rejected outright — confirmed via web research this isn't account-specific, it's a general API limitation (allowlist-only, and Google removed third-party/API access to this report entirely in August 2024). The standard `search_impression_share`/`search_budget_lost_impression_share` fields *do* work, but those are the same account-level IS metrics already collected (no per-competitor breakdown) — nothing new there.
+
+`web/scripts/import-auction-insights.ts` parses a CSV manually exported from the Ads UI (Campaigns → Auction insights → Download) — handles Google's quoted-field CSV format and a leading title row before the real header, matches column names case-insensitively against known label variants (Google has renamed these across UI versions), aggregates per-domain across however many campaign-level rows each competitor domain appears in, and upserts a single rolling Brain entry (`brain_auction_insights_latest`, category `competitive`) — re-running the script after a fresh export keeps it current. This is a periodic manual step, not part of the automated collect pipeline; re-run whenever you re-export (e.g. monthly).
+
+### Verification status
+
+All three: typecheck and lint pass clean. `clusterKeywordsForSplit`/`createAdGroup` and `loadChangeOutcomeCandidates`/`detectChangeOutcomes` were run against the real account's live data with no LLM call (pure rule functions) — both executed without error; neither currently has a real candidate to fire on (no ad group has >20 keywords yet; no `adjust_budget` change_log row is 30+ days old yet), which is correct given the account's actual current state, not a gap in the logic. The CSV importer was tested against a synthetic sample file (parsed correctly, including the `--` no-data placeholder and a leading title row) and the test Brain entry it created was deleted afterward — it has not yet been run against a real Auction Insights export.
 
 ---
 
@@ -211,7 +239,7 @@ The Brain is what makes this system strategically intelligent rather than purely
 ```json
 {
   "id": "brain_001",
-  "category": "copy|bidding|structure|scaling|brand|keywords|audience|competitive|landing_page|pmax|reddit_intel|general",
+  "category": "copy|bidding|structure|scaling|brand|keywords|audience|competitive|landing_page|pmax|reddit_intel|general|products",
   "source": "filename or URL",
   "source_type": "upload|reddit|manual",
   "date_added": "YYYY-MM-DD",
@@ -238,6 +266,7 @@ The Brain is what makes this system strategically intelligent rather than purely
 | `pmax` | Performance Max optimization guides, asset group strategy, signal setup |
 | `reddit_intel` | Reserved for future Reddit integration |
 | `general` | Anything that doesn't fit a specific category |
+| `products` | **(v2 addition, June 2026)** Real product catalog data — exact names, prices, pack sizes, ingredients, certifications, USPs scraped from the brand's own site. Added because analysts writing ad copy (`audienceCopyAnalyst.ts`, `qualityStructureAnalyst.ts`) previously had to infer product details from sparse ad-group names and the LLM defaulted to generic brand boilerplate — real per-product facts let copy be genuinely specific instead of templated. |
 
 ---
 
@@ -302,8 +331,8 @@ Each Analyst = one rules pass (if applicable) + **one** LLM call (multi-provider
 | Analyst | Merges (v1 agents) | Pattern | Brain categories | `largePrompt` |
 |---|---|---|---|---|
 | **Performance & Budget Analyst** | PerformanceAnalyst, BidBudgetAnalyst, ConversionHealthChecker | rule-based, 1 LLM call | bidding, scaling, general | no |
-| **Quality & Structure Analyst** | QualityScoreInspector, AccountStructureReviewer, ExtensionAuditor | rule-based, 1 LLM call | structure, copy, landing_page, brand | yes |
-| **Audience & Copy Analyst** | AudienceAnalyst, AdCopyCritic | rule-based, 1 LLM call | audience, copy, brand | no |
+| **Quality & Structure Analyst** | QualityScoreInspector, AccountStructureReviewer, ExtensionAuditor | rule-based, 1 LLM call | structure, copy, landing_page, brand, competitive, products | yes |
+| **Audience & Copy Analyst** | AudienceAnalyst, AdCopyCritic | rule-based, 1 LLM call | audience, copy, brand, competitive, products | no |
 | **Search Intelligence Analyst** | KeywordMiner, NegativeKwHunter, SearchTermPatternAnalyzer | pure LLM, 1 call, structured multi-section output | keywords, structure, audience | yes |
 | **Market Intelligence Analyst** | CompetitiveIntel, CategoryTrendSpotter | pure LLM, 1 call | competitive, brand, general, pmax | yes |
 | **Landing Page Scorer** | LandingPageScorer (unchanged) | LLM + URL fetch | landing_page, copy | no |
@@ -350,7 +379,7 @@ Added after a real incident: a Market Intelligence finding recommended *"Increas
 - **ROAS/CPA gate**: any finding recommending a budget/bid increase — matched either by known id prefix (`budget-locked-*`, `sp-budget-misalloc-*`) OR by a regex catching free-text "increase/raise ... budget/bid" language from *any* analyst (Market Intelligence has no shared id convention for this) — gets demoted one severity tier if the same `target.id` has an open `roas-shortfall-*` or `cpa-overage-*` finding, with the reason appended to `why` and recorded in `validation_flags`.
 - **Rank-vs-budget gate**: same demotion when `searchRankLostIs > searchBudgetLostIs` on the target campaign — a budget increase won't fix a rank-capped campaign.
 - **Evidence-density floor**: findings with <2 numeric evidence points get `confidence` capped at `"low"` regardless of LLM self-rating.
-- **Insufficient-data cap**: findings in `category="competitive"` (Auction Insights / share-of-voice data this account doesn't collect) capped at P3 with `missing_data` auto-populated.
+- **Insufficient-data cap**: findings in `category="competitive"` capped at P3 with `missing_data` auto-populated. Originally because Auction Insights / share-of-voice data wasn't available at all; as of June 2026 a real (if manually-imported) source exists — see "Strategic gap-closing additions" above — but this gate is unchanged since the API still can't supply it automatically, and the cap is a reasonable default regardless of data freshness.
 
 **Known fragility fixed alongside this**: `ImpactScorer.run()` originally recomputed priority purely from `magnitude × confidence / effort`, completely ignoring any severity `businessRules.ts` had already set — a gate's demotion would silently get reverted back up. Fixed: final priority is now whichever of (formula-computed, finding's current severity) is the *lower-urgency* one, so gates can demote but the formula can never silently promote a gated finding back up.
 
@@ -406,6 +435,10 @@ All `RULE_*` keys are read from the `config` table via `RulesEngine.load(default
 | `RULE_BID_OPP_INCREASE_PCT` | 0.20 | Quality & Structure Analyst — proposed bid increase for `bid-opportunity-*` (capped again at `MAX_BID_SHIFT_PCT`=30% in `implementation.ts`) |
 | `MAX_BUDGET_SHIFT_PCT` | 0.20 | `implementation.ts` — max fraction of a campaign's daily budget moved per run (`adjust_budget`) |
 | `MAX_BID_SHIFT_PCT` | 0.30 | `implementation.ts` — max fraction a keyword's CPC bid can change per run (`adjust_bid`) |
+| `RULE_CHANGE_REVIEW_DAYS` | 30 | Performance & Budget Analyst — how old an `adjust_budget` change_log row must be before the 30-day feedback loop evaluates it |
+| `RULE_CHANGE_REVIEW_WINDOW_DAYS` | 14 | Performance & Budget Analyst — size of the before/after `campaigns_daily` comparison window around the change date |
+| `RULE_CHANGE_REVIEW_WORSE_RATIO` | 1.2 | Performance & Budget Analyst — after-CPA/before-CPA ratio at or above this = "got worse", triggers a revert proposal |
+| `RULE_CHANGE_REVIEW_BETTER_RATIO` | 0.85 | Performance & Budget Analyst — after-CPA/before-CPA ratio at or below this = "got better" (confirmation only, no action) |
 
 ---
 
@@ -457,7 +490,7 @@ Every Analyst returns findings in this structure (stored as rows in the `finding
       "brain_sources": ["brain_001", "brain_042"],
       "missing_data": ["data that would make this more defensible — [] if confidence is high"],
       "alternative_explanations": ["a plausible alternative cause the analyst considered — [] if none"],
-      "proposed_changes": [{"type": "add_keyword|add_negative|add_sitelink|add_callout|create_rsa|adjust_bid|adjust_budget", "params": {}}]
+      "proposed_changes": [{"type": "add_keyword|add_negative|add_sitelink|add_callout|create_rsa|adjust_bid|adjust_budget|create_ad_group", "params": {}}]
     }
   ],
   "summary": "One sentence summary",
@@ -496,7 +529,7 @@ function score(finding) {
 
 Every `action_plan` row carries:
 - `action_category`: `auto` (implementable directly via the Google Ads API, see "Execute-mode migration" above, under safety rails), `manual` (human must act — e.g. structural changes), or `insight` (informational only, e.g. competitive/trend findings)
-- `action_type`: specific operation. Original v1 set: `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`. v2 (`web/src/agents/synthesis/actionMeta.ts`) routes by `agent` + `finding.id` prefix and adds: `add_extensions` (Quality & Structure's `extension-*`), `restructure` (`structure-*` and Search Intelligence's `search-term-pattern-*`), `fix_quality_score` (`low-qs-*`/`no-qs-spend-*`), `reallocate_budget` (`idle-budget-*` and the generalized `pacing-*`), `adjust_bid` (`rank-locked-*` and the keyword-level `bid-opportunity-*`), `update_copy` (Audience & Copy findings, and Performance Budget's `low-ctr-*`), `fix_landing_page` (Landing Page Scorer), `fix_conversion_tracking` (`troas-no-value-*`/`no-conv-*`/`no-value-*`/`high-cvr-*`/`low-cvr-*`), `change_bid_strategy` (Performance Budget's default fallback).
+- `action_type`: specific operation. Original v1 set: `add_negatives`, `increase_budget`, `decrease_budget`, `adjust_bid`, `pause_keyword`, `pause_ad`, `read_insight`. v2 (`web/src/agents/synthesis/actionMeta.ts`) routes by `agent` + `finding.id` prefix and adds: `add_extensions` (Quality & Structure's `extension-*`), `restructure` (`structure-*` and Search Intelligence's `search-term-pattern-*` — `structure-bloated-ag-*` specifically routes to `auto` when a split was found, see "Strategic gap-closing additions" above), `fix_quality_score` (`low-qs-*`/`no-qs-spend-*`), `reallocate_budget` (`idle-budget-*` and the generalized `pacing-*`), `adjust_bid` (`rank-locked-*` and the keyword-level `bid-opportunity-*`), `decrease_budget` (the 30-day `change-outcome-*` revert case, auto only when a revert is actually proposed), `update_copy` (Audience & Copy findings, and Performance Budget's `low-ctr-*`), `fix_landing_page` (Landing Page Scorer), `fix_conversion_tracking` (`troas-no-value-*`/`no-conv-*`/`no-value-*`/`high-cvr-*`/`low-cvr-*`), `change_bid_strategy` (Performance Budget's default fallback, also covers non-revert `change-outcome-*` outcomes as `insight`).
 
 Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFormatter.js`, extended for v2's id-prefix conventions documented in `agentNames.ts`. **`action_category: "auto"` scope as of the Execute-mode migration** — see the table in "Execute-mode migration" above for exactly which id prefixes are auto vs. manual within each `action_type`; several `action_type`s (e.g. `add_keywords`, `add_extensions`, `update_copy`) are a MIX of auto and manual depending on the specific id prefix, not uniformly one or the other.
 
@@ -519,7 +552,7 @@ Logic ported from `_deriveActionMeta_()` in `apps_script/agents/synthesis/PlanFo
 Direct ports of the v1 Sheet schemas, with `*_json` columns becoming `jsonb`. Tables:
 `campaigns`, `campaigns_daily`, `ad_groups`, `keywords`, `ads`, `search_terms`, `extensions`, `negative_keywords` (raw snapshots, replaced wholesale on each collect run, except `campaigns_daily` which appends/upserts by date), and `findings`, `action_plan`, `approvals`, `pending_changes`, `change_log`, `brain_entries`, `config`, `token_usage` (agent layer).
 
-**v2 additions to the agent layer** (see "Synthesis pipeline v2 additions" above): `findings.missing_data` / `findings.alternative_explanations` (nullable `jsonb`, default `[]`); `action_plan.missing_data` / `action_plan.alternative_explanations` / `action_plan.validation_flags` (same). `brain_entries.status` (`active` default — also `staged` for Brain Learning Agent candidates awaiting review, `rejected`). `token_usage.provider` is now a provider **id** (`groq_1`, `cerebras`, `openrouter`, ...), not a fixed `"groq"` string — see "Multi-provider LLM client" above. `findings.proposed_changes` / `action_plan.proposed_changes` (nullable `jsonb`, default `[]`) added by the Execute-mode migration — see "Execute-mode migration" above (migration script: `web/scripts/migrate-proposed-changes-column.ts`). `pending_changes.status` values changed from `queued`/`executing`/`done`/`error` to `dry_run`/`done`/`error` as part of the same migration — it's now a synchronously-written local audit table, not a poll queue.
+**v2 additions to the agent layer** (see "Synthesis pipeline v2 additions" above): `findings.missing_data` / `findings.alternative_explanations` (nullable `jsonb`, default `[]`); `action_plan.missing_data` / `action_plan.alternative_explanations` / `action_plan.validation_flags` (same). `brain_entries.status` (`active` default — also `staged` for Brain Learning Agent candidates awaiting review, `rejected`). `token_usage.provider` is now a provider **id** (`groq_1`, `cerebras`, `openrouter`, ...), not a fixed `"groq"` string — see "Multi-provider LLM client" above. `findings.proposed_changes` / `action_plan.proposed_changes` (nullable `jsonb`, default `[]`) added by the Execute-mode migration — see "Execute-mode migration" above (migration script: `web/scripts/migrate-proposed-changes-column.ts`). `pending_changes.status` values changed from `queued`/`executing`/`done`/`error` to `dry_run`/`done`/`error` as part of the same migration — it's now a synchronously-written local audit table, not a poll queue. `change_log.reviewed` (boolean, default `false`) added by the 30-day change-outcome feedback loop — migration script: `web/scripts/migrate-change-log-reviewed-column.ts` (see "Strategic gap-closing additions" above).
 
 **Budget bug fix (the original motivation for v2):** the Overview page computes "today's total daily budget" as `SUM(budget_micros) WHERE status='ENABLED'` from `campaigns`, AND displays `updated_at` (last collection timestamp) next to it so staleness is visible. Pacing is computed from `campaigns_daily`, not the snapshot, so it stays internally consistent.
 
@@ -543,7 +576,12 @@ google-ads-agent/
     ├── drizzle.config.ts
     ├── scripts/
     │   ├── generate-refresh-token.ts        # one-time local OAuth flow for GOOGLE_ADS_REFRESH_TOKEN — never run in CI
-    │   └── migrate-proposed-changes-column.ts
+    │   ├── migrate-proposed-changes-column.ts
+    │   ├── migrate-change-log-reviewed-column.ts
+    │   ├── import-auction-insights.ts       # manual CSV import (Ads UI export) -> Brain competitive entry
+    │   ├── list-advertised-product-urls.ts  # companion to seed-product-catalog-brain.ts
+    │   ├── seed-competitive-brain.ts        # one-time: real Dabur/Patanjali/Kapiva positioning -> Brain
+    │   └── seed-product-catalog-brain.ts    # one-time: real product facts scraped from the brand's site -> Brain
     ├── src/
     │   ├── db/
     │   │   ├── schema.ts            # Drizzle schema — authoritative DB shape
@@ -608,7 +646,7 @@ google-ads-agent/
 
 ## Known gaps / open questions (read honestly, don't paper over)
 
-- **No agent-health/quality monitor over time.** v1 had Manager/Director modules (`apps_script/managers/*.js`: `AuditManager`, `CampaignDirector`, `CopyIntelManager`, `ImplementationManager`, `SynthesisManager`) that orchestrated *and*, to some degree, sat between the raw agents and the rest of the pipeline. v2's equivalent orchestration is `runDailyAudit.ts` (sequences the 7 agents, isolates failures per-agent so one bad call doesn't abort the run) and `synthesisManager.ts` (sequences dedup → patterns → business rules → validator → scoring → write). **Neither of these — nor anything else in v2 — watches the *analysts themselves* for drift over time**: e.g. "Search Intelligence Analyst returned 0 findings for 5 days straight," "Performance & Budget Analyst's average confidence dropped this week," "an agent's findings are getting flagged by the Recommendation Validator at a rising rate." The Recommendation Validator reviews individual findings within a single run; nothing reviews an agent's behavior *across* runs. This is a real, currently-unfilled gap — if a meta-monitor like this is wanted, it should be scoped as a new piece (likely a small weekly/daily job reading `findings`/`action_plan` history per `agent`, not a v1-style "Manager" port, since v1's Managers were mostly orchestration logic v2 already replaced with `runDailyAudit.ts`/`synthesisManager.ts`).
+- **No agent-health/quality monitor over time (partially addressed).** v1 had Manager/Director modules (`apps_script/managers/*.js`: `AuditManager`, `CampaignDirector`, `CopyIntelManager`, `ImplementationManager`, `SynthesisManager`) that orchestrated *and*, to some degree, sat between the raw agents and the rest of the pipeline. v2's equivalent orchestration is `runDailyAudit.ts` (sequences the 7 agents, isolates failures per-agent so one bad call doesn't abort the run) and `synthesisManager.ts` (sequences dedup → patterns → business rules → validator → scoring → write). The June 2026 "30-day change-outcome feedback loop" (see "Strategic gap-closing additions" above) closes part of this — it does check whether a past `adjust_budget` mutation actually helped, 30 days later — but it's scoped to one change type, evaluating *mutations*, not analyst *quality drift*. **Still missing**: nothing watches the *analysts themselves* for drift over time — e.g. "Search Intelligence Analyst returned 0 findings for 5 days straight," "Performance & Budget Analyst's average confidence dropped this week," "an agent's findings are getting flagged by the Recommendation Validator at a rising rate." The Recommendation Validator reviews individual findings within a single run; nothing reviews an agent's behavior *across* runs. If a meta-monitor like this is wanted, it should be scoped as a new piece (likely a small weekly/daily job reading `findings`/`action_plan` history per `agent`), separate from the change-outcome loop, which answers a different question ("did this change work" vs "is this analyst still reliable").
 
 ---
 

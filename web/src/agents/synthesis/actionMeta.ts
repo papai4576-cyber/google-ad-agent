@@ -38,6 +38,15 @@ export function deriveActionMeta(f: SynthFinding): ActionMeta {
   }
 
   if (agent === AGENTS.PERFORMANCE_BUDGET) {
+    // 30-day change-outcome review: auto only when there's an actual revert proposed (the "got worse"
+    // case) — "better"/"neutral"/"insufficient data" outcomes are informational confirmations with
+    // nothing to execute, so they're insight rather than auto (which would otherwise log a misleading
+    // "regression guard skip" on every hourly run once approved).
+    if (id.startsWith("change-outcome-")) {
+      return (f.proposed_changes ?? []).length > 0
+        ? { action_category: "auto", action_type: "decrease_budget" }
+        : { action_category: "insight", action_type: "read_insight" };
+    }
     if (id.startsWith("budget-locked-")) return { action_category: "auto", action_type: "increase_budget" };
     if (id.startsWith("idle-budget-")) return { action_category: "manual", action_type: "reallocate_budget" };
     if (id.startsWith("pacing-")) return { action_category: "manual", action_type: "reallocate_budget" };
@@ -70,6 +79,10 @@ export function deriveActionMeta(f: SynthFinding): ActionMeta {
     // Keyword-level bid headroom on Manual/Enhanced CPC — a single mutate target, unlike rank-locked-* above.
     if (id.startsWith("bid-opportunity-")) return { action_category: "auto", action_type: "adjust_bid" };
     if (id.startsWith("low-qs-") || id.startsWith("no-qs-spend-")) return { action_category: "manual", action_type: "fix_quality_score" };
+    // Auto only when the clustering rule actually found a split candidate (real Candidate.proposedChanges
+    // set deterministically) — when it didn't, this is still a useful flag but has nothing to execute, so
+    // implementation.ts's regression guard skips it rather than implementation.ts treating it as a no-op.
+    if (id.startsWith("structure-bloated-ag-")) return { action_category: "auto", action_type: "restructure" };
     if (id.startsWith("structure-")) return { action_category: "manual", action_type: "restructure" };
     return { action_category: "manual", action_type: "fix_quality_score" };
   }

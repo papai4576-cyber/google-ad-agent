@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getTargets } from "@/agents/rules/rulesEngine";
 import ApproveButtons from "./ApproveButtons";
 import { BulkApproveButton } from "./BulkApproveButton";
+import ProposedChangesEditor from "./ProposedChangesEditor";
 
 export const dynamic = "force-dynamic";
 
@@ -188,6 +189,18 @@ function ProposedChangeEntry({ change }: { change: ProposedChange }) {
           <span className="font-medium">Budget:</span> campaign {s(p.campaign_id)} → {((Number(p.new_budget_micros) || 0) / 1e6).toFixed(2)}/day
         </div>
       );
+    case "create_ad_group": {
+      const keywords = Array.isArray(p.keywords) ? (p.keywords as Array<{ text: string; match_type?: string }>) : [];
+      return (
+        <div className="text-xs text-zinc-700 dark:text-zinc-300">
+          <p className="font-medium">New ad group: &quot;{s(p.new_ad_group_name)}&quot; — campaign {s(p.campaign_id)}</p>
+          <p className="mt-1">
+            <span className="text-zinc-400">Keywords ({keywords.length}):</span>{" "}
+            {keywords.map((k, i) => `[${k.text}]${i < keywords.length - 1 ? ", " : ""}`)}
+          </p>
+        </div>
+      );
+    }
     default:
       return <div className="text-xs text-zinc-500">{change.type}: {JSON.stringify(p)}</div>;
   }
@@ -396,6 +409,9 @@ export default async function ActionPlanPage({
 
                 {/* Exact structured change (proposed_changes) — what implementation.ts will actually execute */}
                 <ProposedChangesPanel changes={proposedChanges} />
+                {row.status === "pending" && proposedChanges.length > 0 && (
+                  <ProposedChangesEditor planId={row.planId} changes={proposedChanges} />
+                )}
 
                 {/* Missing data / alternative explanations */}
                 {(missingData.length > 0 || alternativeExplanations.length > 0) && (
