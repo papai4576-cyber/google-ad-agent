@@ -73,6 +73,38 @@ function customerId(): string {
 }
 
 /**
+ * Retries on transient OAuth-token-fetch failures from oauth2.googleapis.com —
+ * "Getting metadata from plugin failed... Premature close" and similar network-
+ * level errors during gRPC's auth-metadata callback. Confirmed live: this is a
+ * known, documented gap in google-auth-library-nodejs (e.g. googleapis/google-
+ * auth-library-python#343 — "the current implementation doesn't retry on such
+ * failures" — same underlying issue, Node client has no built-in retry either),
+ * not a credentials/permissions problem; reads with the exact same credentials
+ * succeed immediately before/after. Every mutate/query call below goes through
+ * this — without it, a single transient blip on Google's end fails the call
+ * outright with no recovery, which is exactly what happened in production
+ * (confirmed: 4/4 sitelink creates failed identically on two separate hourly runs).
+ */
+const RETRYABLE_TRANSPORT_ERROR = /getting metadata from plugin failed|premature close|econnreset|etimedout|socket hang up|unavailable/i;
+
+async function withAuthRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e as Error)?.message || e);
+      if (!RETRYABLE_TRANSPORT_ERROR.test(msg) || attempt === maxAttempts) throw e;
+      const waitMs = attempt * 1500;
+      console.log(`[googleAdsClient] transient auth/transport error (attempt ${attempt}/${maxAttempts}), retrying in ${waitMs}ms: ${msg.slice(0, 150)}`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * mutateResources() returns the raw MutateGoogleAdsResponse, whose actual
  * field is `mutate_operation_responses[]` (NOT `results[]` — that name only
  * exists on search/report responses, confirmed by typecheck against this
@@ -101,19 +133,21 @@ function extractResourceName(response: unknown, index: number): string | undefin
 export async function setCampaignBudget(campaignId: string, newBudgetMicros: number): Promise<MutateResult> {
   const customer = getCustomer();
   try {
-    const rows = await customer.query(
-      `SELECT campaign.campaign_budget FROM campaign WHERE campaign.id = ${Number(campaignId)} LIMIT 1`
+    const rows = await withAuthRetry(() =>
+      customer.query(`SELECT campaign.campaign_budget FROM campaign WHERE campaign.id = ${Number(campaignId)} LIMIT 1`)
     );
     const budgetResourceName = (rows[0] as { campaign?: { campaign_budget?: string } })?.campaign?.campaign_budget;
     if (!budgetResourceName) return { success: false, error: `no campaign_budget resource found for campaign ${campaignId}` };
 
-    await customer.mutateResources([
-      {
-        entity: "campaign_budget",
-        operation: "update",
-        resource: { resource_name: budgetResourceName, amount_micros: Math.round(newBudgetMicros) },
-      },
-    ]);
+    await withAuthRetry(() =>
+      customer.mutateResources([
+        {
+          entity: "campaign_budget",
+          operation: "update",
+          resource: { resource_name: budgetResourceName, amount_micros: Math.round(newBudgetMicros) },
+        },
+      ])
+    );
     return { success: true, resourceName: budgetResourceName };
   } catch (e) {
     return { success: false, error: describeError(e) };
@@ -133,30 +167,34 @@ export async function addNegativeKeyword(
   const cid = customerId();
   try {
     if (scope.type === "adgroup") {
-      const result = await customer.mutateResources([
+      const result = await withAuthRetry(() =>
+        customer.mutateResources([
+          {
+            entity: "ad_group_criterion",
+            operation: "create",
+            resource: {
+              ad_group: ResourceNames.adGroup(cid, scope.id),
+              negative: true,
+              keyword: { text, match_type: enums.KeywordMatchType[matchType] },
+            },
+          },
+        ])
+      );
+      return { success: true, resourceName: extractResourceName(result, 0) };
+    }
+    const result = await withAuthRetry(() =>
+      customer.mutateResources([
         {
-          entity: "ad_group_criterion",
+          entity: "campaign_criterion",
           operation: "create",
           resource: {
-            ad_group: ResourceNames.adGroup(cid, scope.id),
+            campaign: ResourceNames.campaign(cid, scope.id),
             negative: true,
             keyword: { text, match_type: enums.KeywordMatchType[matchType] },
           },
         },
-      ]);
-      return { success: true, resourceName: extractResourceName(result, 0) };
-    }
-    const result = await customer.mutateResources([
-      {
-        entity: "campaign_criterion",
-        operation: "create",
-        resource: {
-          campaign: ResourceNames.campaign(cid, scope.id),
-          negative: true,
-          keyword: { text, match_type: enums.KeywordMatchType[matchType] },
-        },
-      },
-    ]);
+      ])
+    );
     return { success: true, resourceName: extractResourceName(result, 0) };
   } catch (e) {
     return { success: false, error: describeError(e) };
@@ -173,13 +211,15 @@ export async function setKeywordBid(adGroupId: string, criterionId: string, newC
   const cid = customerId();
   const resourceName = ResourceNames.adGroupCriterion(cid, adGroupId, criterionId);
   try {
-    await customer.mutateResources([
-      {
-        entity: "ad_group_criterion",
-        operation: "update",
-        resource: { resource_name: resourceName, cpc_bid_micros: Math.round(newCpcBidMicros) },
-      },
-    ]);
+    await withAuthRetry(() =>
+      customer.mutateResources([
+        {
+          entity: "ad_group_criterion",
+          operation: "update",
+          resource: { resource_name: resourceName, cpc_bid_micros: Math.round(newCpcBidMicros) },
+        },
+      ])
+    );
     return { success: true, resourceName };
   } catch (e) {
     return { success: false, error: describeError(e) };
@@ -202,7 +242,9 @@ export async function addKeyword(
     };
     if (cpcBidMicros) resource.cpc_bid_micros = Math.round(cpcBidMicros);
 
-    const result = await customer.mutateResources([{ entity: "ad_group_criterion", operation: "create", resource }]);
+    const result = await withAuthRetry(() =>
+      customer.mutateResources([{ entity: "ad_group_criterion", operation: "create", resource }])
+    );
     return { success: true, resourceName: extractResourceName(result, 0) };
   } catch (e) {
     return { success: false, error: describeError(e) };
@@ -256,7 +298,7 @@ export async function createAdGroup(
         },
       })),
     ];
-    const result = await customer.mutateResources(operations as never);
+    const result = await withAuthRetry(() => customer.mutateResources(operations as never));
     return { success: true, resourceName: extractResourceName(result, 0) };
   } catch (e) {
     return { success: false, error: describeError(e) };
@@ -281,30 +323,32 @@ export async function addSitelinks(
     const tempId = `-${i + 1}`;
     const assetResourceName = ResourceNames.asset(cid, tempId);
     try {
-      const result = await customer.mutateResources([
-        {
-          entity: "asset",
-          operation: "create",
-          resource: {
-            resource_name: assetResourceName,
-            sitelink_asset: {
-              link_text: s.linkText,
-              description1: s.description1 || "",
-              description2: s.description2 || "",
+      const result = await withAuthRetry(() =>
+        customer.mutateResources([
+          {
+            entity: "asset",
+            operation: "create",
+            resource: {
+              resource_name: assetResourceName,
+              sitelink_asset: {
+                link_text: s.linkText,
+                description1: s.description1 || "",
+                description2: s.description2 || "",
+              },
+              final_urls: [s.finalUrl],
             },
-            final_urls: [s.finalUrl],
           },
-        },
-        {
-          entity: "campaign_asset",
-          operation: "create",
-          resource: {
-            campaign: ResourceNames.campaign(cid, campaignId),
-            asset: assetResourceName, // resolved from the create operation above within the same atomic call
-            field_type: enums.AssetFieldType.SITELINK,
+          {
+            entity: "campaign_asset",
+            operation: "create",
+            resource: {
+              campaign: ResourceNames.campaign(cid, campaignId),
+              asset: assetResourceName, // resolved from the create operation above within the same atomic call
+              field_type: enums.AssetFieldType.SITELINK,
+            },
           },
-        },
-      ]);
+        ])
+      );
       out.push({ success: true, resourceName: extractResourceName(result, 1) });
     } catch (e) {
       out.push({ success: false, error: describeError(e) });
@@ -323,22 +367,24 @@ export async function addCallouts(campaignId: string, calloutTexts: string[]): P
     const tempId = `-${i + 1}`;
     const assetResourceName = ResourceNames.asset(cid, tempId);
     try {
-      const result = await customer.mutateResources([
-        {
-          entity: "asset",
-          operation: "create",
-          resource: { resource_name: assetResourceName, callout_asset: { callout_text: text } },
-        },
-        {
-          entity: "campaign_asset",
-          operation: "create",
-          resource: {
-            campaign: ResourceNames.campaign(cid, campaignId),
-            asset: assetResourceName,
-            field_type: enums.AssetFieldType.CALLOUT,
+      const result = await withAuthRetry(() =>
+        customer.mutateResources([
+          {
+            entity: "asset",
+            operation: "create",
+            resource: { resource_name: assetResourceName, callout_asset: { callout_text: text } },
           },
-        },
-      ]);
+          {
+            entity: "campaign_asset",
+            operation: "create",
+            resource: {
+              campaign: ResourceNames.campaign(cid, campaignId),
+              asset: assetResourceName,
+              field_type: enums.AssetFieldType.CALLOUT,
+            },
+          },
+        ])
+      );
       out.push({ success: true, resourceName: extractResourceName(result, 1) });
     } catch (e) {
       out.push({ success: false, error: describeError(e) });
@@ -361,23 +407,25 @@ export async function createResponsiveSearchAd(
   const customer = getCustomer();
   const cid = customerId();
   try {
-    const result = await customer.mutateResources([
-      {
-        entity: "ad_group_ad",
-        operation: "create",
-        resource: {
-          ad_group: ResourceNames.adGroup(cid, adGroupId),
-          status: enums.AdGroupAdStatus.PAUSED, // NEVER enabled at creation — non-negotiable, see header comment
-          ad: {
-            final_urls: finalUrls,
-            responsive_search_ad: {
-              headlines: headlines.map((text) => ({ text })),
-              descriptions: descriptions.map((text) => ({ text })),
+    const result = await withAuthRetry(() =>
+      customer.mutateResources([
+        {
+          entity: "ad_group_ad",
+          operation: "create",
+          resource: {
+            ad_group: ResourceNames.adGroup(cid, adGroupId),
+            status: enums.AdGroupAdStatus.PAUSED, // NEVER enabled at creation — non-negotiable, see header comment
+            ad: {
+              final_urls: finalUrls,
+              responsive_search_ad: {
+                headlines: headlines.map((text) => ({ text })),
+                descriptions: descriptions.map((text) => ({ text })),
+              },
             },
           },
         },
-      },
-    ]);
+      ])
+    );
     return { success: true, resourceName: extractResourceName(result, 0) };
   } catch (e) {
     return { success: false, error: describeError(e) };

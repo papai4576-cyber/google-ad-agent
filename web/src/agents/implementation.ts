@@ -62,6 +62,7 @@ export interface ImplementationResult {
   approved: number;
   executed: number;
   skipped: number;
+  failed: number;
   changes: DerivedChange[];
 }
 
@@ -86,7 +87,7 @@ export async function runImplementation(runDate: string): Promise<Implementation
   console.log(`[implementation] ${items.length} approved 'auto' plan item(s) to action.`);
 
   if (items.length === 0) {
-    return { dryRun, approved: 0, executed: 0, skipped: 0, changes: [] };
+    return { dryRun, approved: 0, executed: 0, skipped: 0, failed: 0, changes: [] };
   }
 
   const ctx: Context = {
@@ -96,6 +97,7 @@ export async function runImplementation(runDate: string): Promise<Implementation
 
   const executed: DerivedChange[] = [];
   let skipped = 0;
+  let failed = 0;
 
   for (const item of items) {
     let derived: DerivedChange[] = [];
@@ -121,16 +123,24 @@ export async function runImplementation(runDate: string): Promise<Implementation
         skipped++;
         continue;
       }
-      await persistChange(ch, runDate, dryRun);
-      executed.push(ch);
-      console.log(
-        `[implementation]  [${dryRun ? "dry-run" : "executed"}] ${ch.changeType} on ${ch.targetType} ` +
-          `${ch.targetId} (${ch.beforeValue} -> ${ch.afterValue})`
-      );
+      const persisted = await persistChange(ch, runDate, dryRun);
+      if (persisted.success) {
+        executed.push(ch);
+        console.log(
+          `[implementation]  [${dryRun ? "dry-run" : "executed"}] ${ch.changeType} on ${ch.targetType} ` +
+            `${ch.targetId} (${ch.beforeValue} -> ${ch.afterValue})`
+        );
+      } else {
+        failed++;
+        console.log(
+          `[implementation]  [FAILED] ${ch.changeType} on ${ch.targetType} ${ch.targetId} ` +
+            `(${ch.beforeValue} -> ${ch.afterValue}): ${persisted.error}`
+        );
+      }
     }
   }
 
-  return { dryRun, approved: items.length, executed: executed.length, skipped, changes: executed };
+  return { dryRun, approved: items.length, executed: executed.length, skipped, failed, changes: executed };
 }
 
 /* ===========================================================================
@@ -358,8 +368,8 @@ function validateChange(ch: DerivedChange, ctx: Context): { ok: boolean; reason?
  * DRY_RUN), then writes the change_log audit row. No more queue-and-poll.
  * ========================================================================= */
 
-async function persistChange(ch: DerivedChange, runDate: string, dryRun: boolean): Promise<void> {
-  if (!db) return;
+async function persistChange(ch: DerivedChange, runDate: string, dryRun: boolean): Promise<{ success: boolean; error?: string }> {
+  if (!db) return { success: false, error: "no db" };
 
   let success = true;
   let errMsg = "";
@@ -433,6 +443,8 @@ async function persistChange(ch: DerivedChange, runDate: string, dryRun: boolean
         errorMessage: dryRun ? "" : errMsg,
       },
     });
+
+  return dryRun ? { success: true } : { success, error: errMsg || undefined };
 }
 
 /** The one place DerivedChange.changeType maps to an actual googleAdsClient.ts call. */
