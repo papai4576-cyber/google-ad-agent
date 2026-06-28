@@ -128,8 +128,22 @@ function getCustomer(): Customer {
   return cachedCustomer;
 }
 
+/**
+ * Some Google Ads API errors (notably decoded GoogleAdsFailure objects from a partial-failure
+ * response, and certain gRPC ServiceError shapes) aren't real `Error` instances and have no
+ * `.message` — `String(e)` on those silently produces the useless literal "[object Object]"
+ * with no indication anything went wrong with the extraction itself. Always fall back to a
+ * full JSON dump of the object's own properties so a real failure is never hidden behind that.
+ */
 function describeError(e: unknown): string {
-  const msg = String((e as Error)?.message || e);
+  let msg = String((e as Error)?.message || "");
+  if (!msg || msg === "[object Object]") {
+    try {
+      msg = JSON.stringify(e, Object.getOwnPropertyNames(e as object));
+    } catch {
+      msg = String(e);
+    }
+  }
   if (/UNAUTHENTICATED|invalid_grant/i.test(msg)) {
     return (
       `${msg} — refresh token may be invalid/expired. Check the OAuth consent screen is "In production", ` +
