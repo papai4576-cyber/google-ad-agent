@@ -325,6 +325,13 @@ function validateChange(ch: DerivedChange, ctx: Context): { ok: boolean; reason?
     if (!text) return { ok: false, reason: "empty sitelink text" };
     if (text.length > 25) return { ok: false, reason: `sitelink text ${text.length} chars > Google's 25-char limit` };
     if (!ch.params.final_url) return { ok: false, reason: "missing final_url" };
+    // Sitelink descriptions have a 35-char limit — NOT the 90-char limit that applies to RSA
+    // descriptions. Confirmed live: a 50-char description1 was rejected by the real API with
+    // "Too long." before this check existed.
+    const desc1 = String(ch.params.description1 ?? "");
+    const desc2 = String(ch.params.description2 ?? "");
+    if (desc1.length > 35) return { ok: false, reason: `sitelink description1 "${desc1}" (${desc1.length} chars) > Google's 35-char limit` };
+    if (desc2.length > 35) return { ok: false, reason: `sitelink description2 "${desc2}" (${desc2.length} chars) > Google's 35-char limit` };
     return { ok: true };
   }
 

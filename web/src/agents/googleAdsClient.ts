@@ -420,10 +420,13 @@ export async function addSitelinks(
             operation: "create",
             resource: {
               resource_name: assetResourceName,
+              // Descriptions are genuinely OPTIONAL on a sitelink asset — confirmed live that
+              // sending an empty string for one (rather than omitting the field) gets rejected
+              // by the real API as "The required field was not present." Omit, don't default to "".
               sitelink_asset: {
                 link_text: s.linkText,
-                description1: s.description1 || "",
-                description2: s.description2 || "",
+                ...(s.description1 ? { description1: s.description1 } : {}),
+                ...(s.description2 ? { description2: s.description2 } : {}),
               },
               final_urls: [s.finalUrl],
             },
