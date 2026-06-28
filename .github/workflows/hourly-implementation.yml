@@ -15,30 +15,16 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - run: npm install
 
-      - name: Diagnose oauth2.googleapis.com reachability
-        run: |
-          echo "--- curl HEAD ---"
-          curl -sS -o /dev/null -w "http_code=%{http_code} time_total=%{time_total}\n" --max-time 10 https://oauth2.googleapis.com/token || echo "curl failed: $?"
-          echo "--- curl POST (expect 400, just testing full round-trip) ---"
-          curl -sS --max-time 10 -X POST https://oauth2.googleapis.com/token -d "grant_type=refresh_token" || echo "curl POST failed: $?"
-          echo ""
-          echo "--- node fetch ---"
-          node -e "fetch('https://oauth2.googleapis.com/token',{method:'POST',body:'grant_type=refresh_token'}).then(r=>r.text()).then(t=>console.log('OK status, body:',t.slice(0,200))).catch(e=>console.error('FETCH FAILED:',e))"
-
-      - name: Diagnose google-ads-api gRPC read (isolate mutate vs query)
+      - name: Diagnose google-ads-api gRPC read (confirm fix before relying on it)
         run: npx tsx --require ./scripts/load-env.cjs scripts/_diag-grpc-read.ts
         env:
           GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
