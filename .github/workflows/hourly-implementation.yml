@@ -38,6 +38,16 @@ jobs:
           echo "--- node fetch ---"
           node -e "fetch('https://oauth2.googleapis.com/token',{method:'POST',body:'grant_type=refresh_token'}).then(r=>r.text()).then(t=>console.log('OK status, body:',t.slice(0,200))).catch(e=>console.error('FETCH FAILED:',e))"
 
+      - name: Diagnose google-ads-api gRPC read (isolate mutate vs query)
+        run: npx tsx --require ./scripts/load-env.cjs scripts/_diag-grpc-read.ts
+        env:
+          GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET: ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_REFRESH_TOKEN: ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+          GOOGLE_ADS_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_CUSTOMER_ID }}
+
       - run: npm run hourly-implementation
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
