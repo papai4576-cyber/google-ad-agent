@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -27,6 +27,7 @@ jobs:
       - name: Diagnose google-ads-api gRPC read (confirm fix before relying on it)
         run: npx tsx --require ./scripts/load-env.cjs scripts/_diag-grpc-read.ts
         env:
+          NODE_OPTIONS: "--dns-result-order=ipv4first"
           GOOGLE_ADS_CLIENT_ID: ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
           GOOGLE_ADS_CLIENT_SECRET: ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
           GOOGLE_ADS_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
