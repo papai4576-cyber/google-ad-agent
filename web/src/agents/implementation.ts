@@ -332,6 +332,11 @@ function validateChange(ch: DerivedChange, ctx: Context): { ok: boolean; reason?
     const desc2 = String(ch.params.description2 ?? "");
     if (desc1.length > 35) return { ok: false, reason: `sitelink description1 "${desc1}" (${desc1.length} chars) > Google's 35-char limit` };
     if (desc2.length > 35) return { ok: false, reason: `sitelink description2 "${desc2}" (${desc2.length} chars) > Google's 35-char limit` };
+    // Confirmed live: Google's API requires sitelink descriptions as a matched pair — sending
+    // only one (the other empty/omitted) is rejected as "The required field was not present."
+    if (Boolean(desc1) !== Boolean(desc2)) {
+      return { ok: false, reason: "sitelink description1/description2 must both be set or both omitted" };
+    }
     return { ok: true };
   }
 

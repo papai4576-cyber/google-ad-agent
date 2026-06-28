@@ -82,12 +82,13 @@ export async function buildQualityStructureAnalystSpec(): Promise<RuleBasedAnaly
       'For sitelink findings (id prefixes "extension-no-extensions-account", "extension-no-sitelinks-", "extension-few-sitelinks-"): ' +
       "ALSO populate `proposed_changes` with one entry per NEW sitelink you propose (4-6 for no-sitelinks, enough to reach 4 total " +
       'for few-sitelinks): {"type":"add_sitelink","params":{"campaign_id":"<target.id>","link_text":"<=25 chars","description1":' +
-      '"<=35 chars, omit this field entirely (do not send an empty string) if you have nothing to put here","description2":' +
-      '"<=35 chars, same rule — omit rather than send empty","final_url":"<the URL given in this finding\'s evidence as ' +
-      '\'campaign_final_url\'>"}}. Sitelink descriptions are a HARD 35-character limit — this is NOT the same 90-character limit ' +
-      "that applies to RSA ad descriptions elsewhere in this prompt; confirmed live, a 50-character sitelink description was " +
-      "rejected by the real API. If evidence has no campaign_final_url, leave proposed_changes as [] for that finding (cannot " +
-      "auto-create a sitelink without a destination URL).\n" +
+      '"<=35 chars","description2":"<=35 chars","final_url":"<the URL given in this finding\'s evidence as \'campaign_final_url\'>"}}. ' +
+      "Sitelink descriptions are a HARD 35-character limit — this is NOT the same 90-character limit that applies to RSA ad " +
+      "descriptions elsewhere in this prompt; confirmed live, a 50-character sitelink description was rejected by the real API. " +
+      "Descriptions are optional but ONLY as a PAIR — confirmed live, supplying description1 without description2 (or vice versa) " +
+      "is rejected by the real API as a required field being missing. Either write both description1 AND description2, or omit " +
+      "both fields entirely (do not send either as an empty string). If evidence has no campaign_final_url, leave proposed_changes " +
+      "as [] for that finding (cannot auto-create a sitelink without a destination URL).\n" +
       'For callout findings (id prefix "extension-no-callouts-"): ALSO populate `proposed_changes` with one entry per callout: ' +
       '{"type":"add_callout","params":{"campaign_id":"<target.id>","text":"<=25 chars"}}.\n' +
       'Structured-snippet findings ("extension-no-snippets-") and weak-extension-copy findings ("extension-weak-ext-") have no ' +
