@@ -16,6 +16,7 @@
  * is attempted — mirrors proxy.ts's DASHBOARD_PASSWORD fail-closed pattern.
  */
 
+import { inspect } from "node:util";
 import * as grpc from "@grpc/grpc-js";
 import { GoogleAdsApi, enums, ResourceNames, type Customer } from "google-ads-api";
 
@@ -132,14 +133,18 @@ function getCustomer(): Customer {
  * Some Google Ads API errors (notably decoded GoogleAdsFailure objects from a partial-failure
  * response, and certain gRPC ServiceError shapes) aren't real `Error` instances and have no
  * `.message` — `String(e)` on those silently produces the useless literal "[object Object]"
- * with no indication anything went wrong with the extraction itself. Always fall back to a
- * full JSON dump of the object's own properties so a real failure is never hidden behind that.
+ * with no indication anything went wrong with the extraction itself. JSON.stringify isn't
+ * sufficient either: the decoded GoogleAdsFailure's nested `errors[]` entries are protobuf
+ * message instances (from the underlying google-ads-node package) whose real field data isn't
+ * always exposed as enumerable own properties, so JSON.stringify renders each one as bare `{}`.
+ * util.inspect with depth:null walks prototype chains and getters too, so it's the one that
+ * actually surfaces the real field values (error_code, message, trigger, location, etc.).
  */
 function describeError(e: unknown): string {
   let msg = String((e as Error)?.message || "");
-  if (!msg || msg === "[object Object]") {
+  if (!msg || msg === "[object Object]" || /^\{.*"errors":\s*\[\s*\{\s*\}/.test(msg)) {
     try {
-      msg = JSON.stringify(e, Object.getOwnPropertyNames(e as object));
+      msg = inspect(e, { depth: null, showHidden: false, breakLength: Infinity });
     } catch {
       msg = String(e);
     }
