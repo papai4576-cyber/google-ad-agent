@@ -18,6 +18,7 @@
     "migrate-brain-status": "tsx --require ./scripts/load-env.cjs scripts/migrate-brain-status.ts"
   },
   "dependencies": {
+    "@grpc/grpc-js": "1.14.4",
     "drizzle-orm": "^0.45.2",
     "google-ads-api": "^24.1.0",
     "next": "16.2.9",

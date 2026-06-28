@@ -16,6 +16,7 @@
  * is attempted — mirrors proxy.ts's DASHBOARD_PASSWORD fail-closed pattern.
  */
 
+import * as grpc from "@grpc/grpc-js";
 import { GoogleAdsApi, enums, ResourceNames, type Customer } from "google-ads-api";
 
 export interface MutateResult {
@@ -38,6 +39,52 @@ function requireEnv(name: string): string {
   return v;
 }
 
+/**
+ * Manual OAuth token exchange via Node's native `fetch()` — bypasses `google-auth-library`'s
+ * internal `gaxios`-based HTTP client entirely.
+ *
+ * Root-caused live, four separate experiments deep: `google-ads-api`'s gRPC path
+ * (`mutateResources`, via `UserRefreshClient`) AND its REST path (`query`, via
+ * `OAuth2Client.getAccessToken()`) both failed 100% of the time in the
+ * `hourly-implementation` GitHub Actions runner with "Getting metadata from plugin
+ * failed... Premature close" while fetching a token from oauth2.googleapis.com — but
+ * plain `curl` and Node's own `fetch()` to that exact same endpoint, from that exact
+ * same run, succeeded instantly every time. Retrying (4 attempts w/ backoff), pinning
+ * Node 22 instead of 24, and forcing `--dns-result-order=ipv4first` (in case of an
+ * IPv6 happy-eyeballs gap) each made zero difference — all rule out network
+ * reachability, Node version, and IPv6 as the cause. Since `UserRefreshClient` and
+ * `OAuth2Client.getAccessToken()` both ultimately go through the same `gaxios` HTTP
+ * layer internally, and that's the one thing different between the failing calls and
+ * the succeeding ones, `gaxios` itself is the common point of failure in this specific
+ * runner environment. Fetching the token with the same `fetch()` that's proven to work
+ * sidesteps it completely.
+ */
+let cachedAccessToken: { token: string; expiresAt: number } | null = null;
+
+async function fetchAccessTokenManually(): Promise<string> {
+  if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now()) {
+    return cachedAccessToken.token;
+  }
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: requireEnv("GOOGLE_ADS_CLIENT_ID"),
+      client_secret: requireEnv("GOOGLE_ADS_CLIENT_SECRET"),
+      refresh_token: requireEnv("GOOGLE_ADS_REFRESH_TOKEN"),
+      grant_type: "refresh_token",
+    }),
+  });
+  const body = (await res.json()) as { access_token?: string; expires_in?: number; error?: string; error_description?: string };
+  if (!res.ok || !body.access_token) {
+    throw new Error(`manual token fetch failed: HTTP ${res.status} ${body.error || ""} ${body.error_description || ""}`.trim());
+  }
+  // Refresh 2 minutes before actual expiry (tokens last ~1hr) to avoid using one that
+  // expires mid-flight on a slow call.
+  cachedAccessToken = { token: body.access_token, expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000 - 120_000 };
+  return cachedAccessToken.token;
+}
+
 function getCustomer(): Customer {
   if (cachedCustomer) return cachedCustomer;
 
@@ -54,6 +101,30 @@ function getCustomer(): Customer {
     login_customer_id: requireEnv("GOOGLE_ADS_LOGIN_CUSTOMER_ID"),
     refresh_token: requireEnv("GOOGLE_ADS_REFRESH_TOKEN"),
   });
+
+  // Override both of the package's internal token-fetch paths (see fetchAccessTokenManually's
+  // doc comment) — REST (`getAccessToken`, used by `query`/`report`) and gRPC (`getCredentials`,
+  // used by `mutateResources`) — with the version that doesn't go through the broken gaxios path.
+  // Instance-property overrides shadow the inherited prototype methods; doesn't touch node_modules.
+  const customerWithInternals = cachedCustomer as unknown as {
+    getAccessToken: () => Promise<string>;
+    getCredentials: () => grpc.ChannelCredentials;
+  };
+  customerWithInternals.getAccessToken = fetchAccessTokenManually;
+  customerWithInternals.getCredentials = () => {
+    const sslCreds = grpc.credentials.createSsl();
+    const callCreds = grpc.credentials.createFromMetadataGenerator((_options, callback) => {
+      fetchAccessTokenManually()
+        .then((token) => {
+          const metadata = new grpc.Metadata();
+          metadata.set("authorization", `Bearer ${token}`);
+          callback(null, metadata);
+        })
+        .catch((err) => callback(err instanceof Error ? err : new Error(String(err))));
+    });
+    return grpc.credentials.combineChannelCredentials(sslCreds, callCreds);
+  };
+
   return cachedCustomer;
 }
 
